@@ -1,8 +1,21 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
 }
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun releaseSigningProperty(name: String): String =
+    keystoreProperties.getProperty(name)
+        ?: throw GradleException("Missing '$name' in local keystore.properties. Copy keystore.properties.example and fill it with local signing values.")
 
 android {
     namespace = "com.smithware.orderradar"
@@ -18,22 +31,20 @@ android {
     }
 
     signingConfigs {
-        create("localRelease") {
-            storeFile = rootProject.file("release-keystore.jks")
-            storePassword = "orderradar"
-            keyAlias = "orderradar"
-            keyPassword = "orderradar"
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(releaseSigningProperty("storeFile"))
+                storePassword = releaseSigningProperty("storePassword")
+                keyAlias = releaseSigningProperty("keyAlias")
+                keyPassword = releaseSigningProperty("keyPassword")
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = if (rootProject.file("release-keystore.jks").exists()) {
-                signingConfigs.getByName("localRelease")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

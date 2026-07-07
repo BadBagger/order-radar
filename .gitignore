@@ -3,9 +3,14 @@
 /app/build/
 /build/
 /local.properties
+local.properties
+keystore.properties
+signing.properties
 *.apk
 *.aab
 *.jks
 *.keystore
+*password*
+*credential*
 .env
 /.codex-remote-attachments/
