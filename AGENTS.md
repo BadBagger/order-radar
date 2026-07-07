@@ -12,4 +12,4 @@ Before publishing or changing release metadata:
 
 Package: `com.smithware.orderradar`
 Repo: `BadBagger/order-radar`
-Current APK release: `v0.3.0-products`
+Current APK release: `v0.4.0-order-photo-import`

@@ -48,6 +48,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
     var showProducts by remember { mutableStateOf(false) }
     var editProductId by remember { mutableStateOf<Long?>(null) }
     var showPhotoReview by remember { mutableStateOf(false) }
+    var showOrderImport by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = RadarCharcoal,
@@ -56,7 +57,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                 Tab.entries.forEach { item ->
                     NavigationBarItem(
                         selected = item == tab,
-                        onClick = { tab = item; detailProductId = null; showProducts = false; editProductId = null },
+                        onClick = { tab = item; detailProductId = null; showProducts = false; editProductId = null; showOrderImport = false },
                         icon = { Icon(item.icon, contentDescription = item.label) },
                         label = { Text(item.label, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = RadarCharcoal, selectedTextColor = RadarLime, indicatorColor = RadarLime, unselectedIconColor = RadarMuted, unselectedTextColor = RadarMuted)
@@ -73,6 +74,12 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     products = state.snapshots.map { it.product },
                     onSaveCount = vm::addCount,
                     onBack = { showPhotoReview = false }
+                )
+                showOrderImport -> OrderPhotoImportScreen(
+                    products = state.snapshots.map { it.product },
+                    trucks = state.trucks,
+                    onSaveOrder = vm::createOrderFromPhoto,
+                    onBack = { showOrderImport = false }
                 )
                 editProductId != null -> ProductEditorScreen(
                     product = editProduct,
@@ -92,7 +99,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                 product != null -> ProductDetailScreen(snapshot = product, forecast = state.forecasts.firstOrNull { it.productId == product.product.id }, onBack = { detailProductId = null }, onCount = { tab = Tab.Count; detailProductId = null }, onUsage = { vm.addMovement(product.product, 1.0) }, onEdit = { editProductId = product.product.id })
                 tab == Tab.Home -> HomeDashboardScreen(state, onOpenProduct = { detailProductId = it }, onProductList = { showProducts = true }, onPhotoReview = { showPhotoReview = true })
                 tab == Tab.Count -> CoolerCountScreen(state, onSaveCount = vm::addCount, onSaveMovement = vm::addMovement, onPhotoReview = { showPhotoReview = true })
-                tab == Tab.Orders -> OrdersScreen(state, onVariance = vm::addVariance)
+                tab == Tab.Orders -> OrdersScreen(state, onVariance = vm::addVariance, onImportPhoto = { showOrderImport = true })
                 tab == Tab.Displays -> DisplaysScreen(state)
                 tab == Tab.Reports -> ReportsScreen(state)
             }
@@ -179,7 +186,7 @@ private fun CoolerCountScreen(state: OrderRadarUiState, onSaveCount: (Product, D
 }
 
 @Composable
-private fun OrdersScreen(state: OrderRadarUiState, onVariance: (Product, Double, Double) -> Unit) {
+private fun OrdersScreen(state: OrderRadarUiState, onVariance: (Product, Double, Double) -> Unit, onImportPhoto: () -> Unit) {
     var selected by remember { mutableStateOf("Forecast") }
     Screen("Orders", "Build orders, check deliveries, and explain surprises.") {
         SegmentedButtonRow(selected, listOf("Forecast", "Builder", "Delivery", "Variance", "Trucks")) { selected = it }
@@ -190,7 +197,7 @@ private fun OrdersScreen(state: OrderRadarUiState, onVariance: (Product, Double,
                     ForecastCard(snapshot, forecast)
                 }
             }
-            "Builder" -> OrderBuilderSection(state)
+            "Builder" -> OrderBuilderSection(state, onImportPhoto)
             "Delivery" -> DeliveryDaySection(state, onVariance)
             "Variance" -> state.variances.forEach { DeliveryVarianceCard(state.product(it.productId)?.name ?: "Product", it) }
             "Trucks" -> state.trucks.forEach { TruckCard(it) }
@@ -199,8 +206,32 @@ private fun OrdersScreen(state: OrderRadarUiState, onVariance: (Product, Double,
 }
 
 @Composable
-private fun OrderBuilderSection(state: OrderRadarUiState) {
+private fun OrderBuilderSection(state: OrderRadarUiState, onImportPhoto: () -> Unit) {
     val lines = state.forecasts.filter { it.recommendedOrderQuantity > 0.0 }
+    val latestDraft = state.orders.firstOrNull { it.status == OrderDraftStatus.DRAFT }
+    val savedLines = latestDraft?.let { order -> state.orderLines.filter { it.orderDraftId == order.id } }.orEmpty()
+    BigActionButton("Scan Order Photo", Icons.Default.PhotoCamera) { onImportPhoto() }
+    WarningBanner("Photo import creates an editable draft only. Confirm it before copying or marking placed.")
+    if (latestDraft != null) {
+        SimpleCard {
+            Text(latestDraft.title, fontWeight = FontWeight.Bold)
+            Text(latestDraft.notes ?: "Draft order", color = RadarMuted)
+        }
+        savedLines.forEach { line ->
+            val product = state.product(line.productId) ?: return@forEach
+            SimpleCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(product.name, fontWeight = FontWeight.SemiBold)
+                        Text("Draft quantity: ${line.userQuantity.clean()} ${line.unit}", color = RadarText)
+                        Text(line.reason, color = RadarMuted)
+                    }
+                    StatusChip("Draft", ForecastStatus.WATCH)
+                }
+            }
+        }
+        SectionHeader("Forecast suggestions")
+    }
     SimpleCard {
         Text("Box Meat Truck Order", fontWeight = FontWeight.Bold)
         Text("This app does not submit official orders. Copy this into your workplace ordering system.", color = RadarOrange)

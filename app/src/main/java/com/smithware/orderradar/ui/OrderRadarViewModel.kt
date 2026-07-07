@@ -74,6 +74,10 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.saveProduct(product)
     }
 
+    fun createOrderFromPhoto(truck: TruckSchedule, lines: List<Pair<Product, Double>>, sourceNote: String) = viewModelScope.launch {
+        repo.createOrderFromPhoto(truck, lines, sourceNote)
+    }
+
     fun addVariance(product: Product, ordered: Double, received: Double) = viewModelScope.launch {
         val (_, reason) = DeliveryVarianceEngine.evaluate(ordered, received)
         repo.addVariance(product, ordered, received, reason)

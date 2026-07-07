@@ -14,8 +14,8 @@ forecasting.
 
 ## Current Status
 
-- Latest local build: `v0.3.0-products`
-- APK asset: `OrderRadar.apk` / `OrderRadar-release-v0.3.0-products.apk`
+- Latest local build: `v0.4.0-order-photo-import`
+- APK asset: `OrderRadar.apk` / `OrderRadar-release-v0.4.0-order-photo-import.apk`
 - DevHub entry: added with package visibility and store listing.
 - Logo: user-provided radar box artwork toned down from neon lime to muted emerald for app and DevHub listing.
 

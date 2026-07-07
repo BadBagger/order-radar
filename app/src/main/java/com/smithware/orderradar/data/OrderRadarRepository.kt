@@ -72,6 +72,36 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
     suspend fun addCount(product: Product, quantity: Double, note: String) = dao.insertCount(InventoryCount(productId = product.id, quantity = quantity, unit = product.defaultUnit, notes = note))
     suspend fun addMovement(product: Product, quantity: Double, type: MovementType, note: String) = dao.insertMovement(MovementEntry(productId = product.id, quantity = quantity, unit = product.defaultUnit, movementType = type, notes = note))
     suspend fun saveProduct(product: Product): Long = dao.upsertProduct(product.copy(updatedAt = System.currentTimeMillis()))
+    suspend fun createOrderFromPhoto(
+        truck: TruckSchedule,
+        lines: List<Pair<Product, Double>>,
+        sourceNote: String
+    ): Long {
+        val now = System.currentTimeMillis()
+        val orderId = dao.insertOrder(
+            OrderDraft(
+                truckScheduleId = truck.id,
+                title = "${truck.name} Photo Import",
+                orderDate = now,
+                expectedDeliveryDate = now + days(max(1, nextTruckDays(truck))),
+                status = OrderDraftStatus.DRAFT,
+                notes = "Imported from photo/OCR assist. Review every line before using this in the official ordering system. $sourceNote"
+            )
+        )
+        lines.forEach { (product, quantity) ->
+            dao.insertOrderLine(
+                OrderLine(
+                    orderDraftId = orderId,
+                    productId = product.id,
+                    recommendedQuantity = 0.0,
+                    userQuantity = quantity,
+                    unit = product.defaultUnit,
+                    reason = "Imported from order photo. Confirm quantity before marking placed."
+                )
+            )
+        }
+        return orderId
+    }
     suspend fun addVariance(product: Product, ordered: Double, received: Double, reason: String) {
         val difference = received - ordered
         val type = if (difference > 0) VarianceType.RECEIVED_MORE_THAN_ORDERED else VarianceType.RECEIVED_LESS_THAN_ORDERED
