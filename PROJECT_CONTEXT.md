@@ -14,10 +14,10 @@ forecasting.
 
 ## Current Status
 
-- Latest local build: `v0.2.0`
-- APK asset: `OrderRadar.apk` / `OrderRadar-release-v0.2.0.apk`
+- Latest local build: `v0.2.1-colors`
+- APK asset: `OrderRadar.apk` / `OrderRadar-release-v0.2.1-colors.apk`
 - DevHub entry: added with package visibility and store listing.
-- Logo: user-provided green radar box artwork applied to app and DevHub listing.
+- Logo: user-provided radar box artwork toned down from neon lime to muted emerald for app and DevHub listing.
 
 ## MVP Scope
 
