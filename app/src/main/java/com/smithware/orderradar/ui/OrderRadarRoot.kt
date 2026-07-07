@@ -104,7 +104,8 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onVariance = vm::addVariance,
                     onImportPhoto = { showOrderImport = true },
                     onUpdateLine = vm::updateOrderLineQuantity,
-                    onMarkPlaced = vm::markOrderPlaced
+                    onMarkPlaced = vm::markOrderPlaced,
+                    onAddForecast = vm::addForecastToDraft
                 )
                 tab == Tab.Displays -> DisplaysScreen(state)
                 tab == Tab.Reports -> ReportsScreen(state)
@@ -197,7 +198,8 @@ private fun OrdersScreen(
     onVariance: (Product, Double, Double) -> Unit,
     onImportPhoto: () -> Unit,
     onUpdateLine: (OrderLine, Double) -> Unit,
-    onMarkPlaced: (OrderDraft) -> Unit
+    onMarkPlaced: (OrderDraft) -> Unit,
+    onAddForecast: (ProductSnapshot, ForecastResult, TruckSchedule?) -> Unit
 ) {
     var selected by remember { mutableStateOf("Forecast") }
     Screen("Orders", "Build orders, check deliveries, and explain surprises.") {
@@ -209,7 +211,7 @@ private fun OrdersScreen(
                     ForecastCard(snapshot, forecast)
                 }
             }
-            "Builder" -> OrderBuilderSection(state, onImportPhoto, onUpdateLine, onMarkPlaced)
+            "Builder" -> OrderBuilderSection(state, onImportPhoto, onUpdateLine, onMarkPlaced, onAddForecast)
             "Delivery" -> DeliveryDaySection(state, onVariance)
             "Variance" -> state.variances.forEach { DeliveryVarianceCard(state.product(it.productId)?.name ?: "Product", it) }
             "Trucks" -> state.trucks.forEach { TruckCard(it) }
@@ -222,7 +224,8 @@ private fun OrderBuilderSection(
     state: OrderRadarUiState,
     onImportPhoto: () -> Unit,
     onUpdateLine: (OrderLine, Double) -> Unit,
-    onMarkPlaced: (OrderDraft) -> Unit
+    onMarkPlaced: (OrderDraft) -> Unit,
+    onAddForecast: (ProductSnapshot, ForecastResult, TruckSchedule?) -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
     val lines = state.forecasts.filter { it.recommendedOrderQuantity > 0.0 }
@@ -278,15 +281,24 @@ private fun OrderBuilderSection(
         Text("This app does not submit official orders. Copy this into your workplace ordering system.", color = RadarOrange)
     }
     lines.forEach { forecast ->
-        val product = state.product(forecast.productId) ?: return@forEach
+        val snapshot = state.snapshot(forecast.productId) ?: return@forEach
+        val product = snapshot.product
         SimpleCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text(product.name, fontWeight = FontWeight.SemiBold)
                     Text("Recommended: ${forecast.recommendedOrderQuantity.clean()} ${product.defaultUnit}", color = RadarMuted)
                     Text(forecast.reason, color = RadarMuted)
                 }
-                StatusChip("Add", ForecastStatus.ORDER_NEEDED)
+                Button(
+                    onClick = { onAddForecast(snapshot, forecast, state.trucks.firstOrNull()) },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add")
+                }
             }
         }
     }

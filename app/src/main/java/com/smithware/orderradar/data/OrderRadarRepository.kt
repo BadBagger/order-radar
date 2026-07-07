@@ -112,6 +112,37 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
 
     suspend fun markOrderPlaced(order: OrderDraft) = dao.updateOrderStatus(order.id, OrderDraftStatus.PLACED)
 
+    suspend fun addForecastToDraft(product: Product, truck: TruckSchedule, quantity: Double, reason: String): Long {
+        val now = System.currentTimeMillis()
+        val order = dao.latestDraftForTruck(truck.id)
+        val orderId = order?.id ?: dao.insertOrder(
+            OrderDraft(
+                truckScheduleId = truck.id,
+                title = "${truck.name} Forecast Draft",
+                orderDate = now,
+                expectedDeliveryDate = now + days(max(1, nextTruckDays(truck))),
+                status = OrderDraftStatus.DRAFT,
+                notes = "Built from Order Radar forecast suggestions. Confirm every line before using this in the official ordering system."
+            )
+        )
+        val existing = dao.orderLineForProduct(orderId, product.id)
+        if (existing != null) {
+            dao.updateOrderLineQuantity(existing.id, quantity)
+            return orderId
+        }
+        dao.insertOrderLine(
+            OrderLine(
+                orderDraftId = orderId,
+                productId = product.id,
+                recommendedQuantity = quantity,
+                userQuantity = quantity,
+                unit = product.defaultUnit,
+                reason = reason
+            )
+        )
+        return orderId
+    }
+
     suspend fun addVariance(product: Product, ordered: Double, received: Double, reason: String) {
         val difference = received - ordered
         val type = if (difference > 0) VarianceType.RECEIVED_MORE_THAN_ORDERED else VarianceType.RECEIVED_LESS_THAN_ORDERED
