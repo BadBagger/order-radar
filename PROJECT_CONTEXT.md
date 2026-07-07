@@ -14,8 +14,8 @@ forecasting.
 
 ## Current Status
 
-- Latest local build: `v0.4.2-forecast-add`
-- APK asset: `OrderRadar.apk` / `OrderRadar-release-v0.4.2-forecast-add.apk`
+- Latest local build: `v0.4.3-delivery-check`
+- APK asset: `OrderRadar.apk` / `OrderRadar-release-v0.4.3-delivery-check.apk`
 - DevHub entry: added with package visibility and store listing.
 - Logo: user-provided radar box artwork toned down from neon lime to muted emerald for app and DevHub listing.
 
@@ -35,6 +35,7 @@ The MVP is intentionally local-first and manager-focused:
 - CameraX photo attachment and ML Kit OCR assist with user confirmation
 - Photo-scanned order drafts that can be edited, copied, and marked placed
 - Forecast recommendation cards that add or update editable order draft lines
+- Placed order drafts create delivery checklists with adjustable received quantities
 
 Order Radar does not submit official orders, place AI orders, use cloud sync,
 or replace workplace inventory, ordering, food safety, or compliance systems.

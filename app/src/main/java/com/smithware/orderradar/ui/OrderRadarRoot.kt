@@ -105,7 +105,8 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onImportPhoto = { showOrderImport = true },
                     onUpdateLine = vm::updateOrderLineQuantity,
                     onMarkPlaced = vm::markOrderPlaced,
-                    onAddForecast = vm::addForecastToDraft
+                    onAddForecast = vm::addForecastToDraft,
+                    onUpdateDelivery = vm::updateDeliveryActual
                 )
                 tab == Tab.Displays -> DisplaysScreen(state)
                 tab == Tab.Reports -> ReportsScreen(state)
@@ -199,7 +200,8 @@ private fun OrdersScreen(
     onImportPhoto: () -> Unit,
     onUpdateLine: (OrderLine, Double) -> Unit,
     onMarkPlaced: (OrderDraft) -> Unit,
-    onAddForecast: (ProductSnapshot, ForecastResult, TruckSchedule?) -> Unit
+    onAddForecast: (ProductSnapshot, ForecastResult, TruckSchedule?) -> Unit,
+    onUpdateDelivery: (DeliveryLine, Double) -> Unit
 ) {
     var selected by remember { mutableStateOf("Forecast") }
     Screen("Orders", "Build orders, check deliveries, and explain surprises.") {
@@ -212,7 +214,7 @@ private fun OrdersScreen(
                 }
             }
             "Builder" -> OrderBuilderSection(state, onImportPhoto, onUpdateLine, onMarkPlaced, onAddForecast)
-            "Delivery" -> DeliveryDaySection(state, onVariance)
+            "Delivery" -> DeliveryDaySection(state, onVariance, onUpdateDelivery)
             "Variance" -> state.variances.forEach { DeliveryVarianceCard(state.product(it.productId)?.name ?: "Product", it) }
             "Trucks" -> state.trucks.forEach { TruckCard(it) }
         }
@@ -305,24 +307,59 @@ private fun OrderBuilderSection(
 }
 
 @Composable
-private fun DeliveryDaySection(state: OrderRadarUiState, onVariance: (Product, Double, Double) -> Unit) {
-    state.deliveryLines.forEach { line ->
-        val product = state.product(line.productId) ?: return@forEach
-        SimpleCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(product.name, fontWeight = FontWeight.SemiBold)
-                    Text("Ordered: ${line.orderedQuantity.clean()} ${line.unit}", color = RadarMuted)
-                    Text("Received: ${line.actualQuantity.clean()} ${line.unit}", color = RadarMuted)
-                    Text("Variance: ${line.variance.clean()}", color = if (line.variance == 0.0) RadarLime else RadarOrange)
-                }
-                StatusChip(line.status.name.readable(), if (line.variance == 0.0) ForecastStatus.GOOD else ForecastStatus.ORDER_NEEDED)
-            }
+private fun DeliveryDaySection(
+    state: OrderRadarUiState,
+    onVariance: (Product, Double, Double) -> Unit,
+    onUpdateDelivery: (DeliveryLine, Double) -> Unit
+) {
+    val linesByRecord = state.deliveryLines.groupBy { it.deliveryRecordId }
+    state.deliveries.forEach { delivery ->
+        val truck = state.trucks.firstOrNull { it.id == delivery.truckScheduleId }
+        SectionHeader(truck?.name ?: "Delivery Check")
+        Text("Expected: ${delivery.deliveryDate.shortDate()}", color = RadarMuted)
+        linesByRecord[delivery.id].orEmpty().forEach { line ->
+            DeliveryLineCard(state, line, onUpdateDelivery)
         }
+    }
+    if (state.deliveryLines.isEmpty()) {
+        EmptyState("No delivery checks yet", "Mark an order draft placed to create expected delivery lines.")
     }
     state.snapshots.firstOrNull()?.product?.let { product ->
         OutlinedButton(onClick = { onVariance(product, 4.0, 3.0) }, modifier = Modifier.fillMaxWidth()) {
             Text("Add sample short variance")
+        }
+    }
+}
+
+@Composable
+private fun DeliveryLineCard(state: OrderRadarUiState, line: DeliveryLine, onUpdateDelivery: (DeliveryLine, Double) -> Unit) {
+    val product = state.product(line.productId) ?: return
+    SimpleCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(product.name, fontWeight = FontWeight.SemiBold)
+                Text("Ordered: ${line.orderedQuantity.clean()} ${line.unit}", color = RadarMuted)
+                Text("Received: ${line.actualQuantity.clean()} ${line.unit}", color = RadarText)
+                Text("Variance: ${line.variance.clean()} | ${line.notes ?: ""}", color = if (line.variance == 0.0) RadarLime else RadarOrange)
+            }
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                StatusChip(line.status.name.readable(), if (line.variance == 0.0) ForecastStatus.GOOD else ForecastStatus.ORDER_NEEDED)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilledIconButton(
+                        onClick = { onUpdateDelivery(line, line.actualQuantity - 1.0) },
+                        modifier = Modifier.size(38.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = RadarPanel, contentColor = RadarText)
+                    ) { Icon(Icons.Default.Remove, contentDescription = "Decrease received") }
+                    FilledIconButton(
+                        onClick = { onUpdateDelivery(line, line.actualQuantity + 1.0) },
+                        modifier = Modifier.size(38.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = RadarLime, contentColor = RadarCharcoal)
+                    ) { Icon(Icons.Default.Add, contentDescription = "Increase received") }
+                }
+                TextButton(onClick = { onUpdateDelivery(line, line.expectedQuantity) }) {
+                    Text("Match")
+                }
+            }
         }
     }
 }
@@ -686,6 +723,14 @@ private fun SimpleCard(onClick: (() -> Unit)? = null, content: @Composable Colum
 @Composable
 private fun SectionHeader(text: String) {
     Text(text, color = RadarLime, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+}
+
+@Composable
+private fun EmptyState(title: String, detail: String) {
+    SimpleCard {
+        Text(title, fontWeight = FontWeight.Bold)
+        Text(detail, color = RadarMuted)
+    }
 }
 
 @Composable

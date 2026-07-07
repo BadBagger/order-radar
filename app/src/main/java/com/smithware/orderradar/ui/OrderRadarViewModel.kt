@@ -91,6 +91,10 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.addForecastToDraft(snapshot.product, truck, forecast.recommendedOrderQuantity, forecast.reason)
     }
 
+    fun updateDeliveryActual(line: DeliveryLine, actualQuantity: Double) = viewModelScope.launch {
+        repo.updateDeliveryActual(line, actualQuantity)
+    }
+
     fun addVariance(product: Product, ordered: Double, received: Double) = viewModelScope.launch {
         val (_, reason) = DeliveryVarianceEngine.evaluate(ordered, received)
         repo.addVariance(product, ordered, received, reason)

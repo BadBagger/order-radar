@@ -74,6 +74,9 @@ interface OrderRadarDao {
     @Query("SELECT * FROM OrderLine WHERE orderDraftId = :orderId AND productId = :productId LIMIT 1")
     suspend fun orderLineForProduct(orderId: Long, productId: Long): OrderLine?
 
+    @Query("SELECT * FROM OrderLine WHERE orderDraftId = :orderId")
+    suspend fun orderLinesForDraft(orderId: Long): List<OrderLine>
+
     @Query("UPDATE OrderLine SET userQuantity = :quantity, updatedAt = :updatedAt WHERE id = :lineId")
     suspend fun updateOrderLineQuantity(lineId: Long, quantity: Double, updatedAt: Long = System.currentTimeMillis())
 
@@ -88,6 +91,12 @@ interface OrderRadarDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDeliveryLine(line: DeliveryLine): Long
+
+    @Query("SELECT * FROM DeliveryRecord WHERE orderDraftId = :orderId LIMIT 1")
+    suspend fun deliveryForOrder(orderId: Long): DeliveryRecord?
+
+    @Query("UPDATE DeliveryLine SET actualQuantity = :actualQuantity, variance = :variance, status = :status, notes = :notes WHERE id = :lineId")
+    suspend fun updateDeliveryLineActual(lineId: Long, actualQuantity: Double, variance: Double, status: DeliveryStatus, notes: String)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertVariance(log: VarianceLog): Long

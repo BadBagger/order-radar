@@ -110,7 +110,54 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
         }
     }
 
-    suspend fun markOrderPlaced(order: OrderDraft) = dao.updateOrderStatus(order.id, OrderDraftStatus.PLACED)
+    suspend fun markOrderPlaced(order: OrderDraft) {
+        dao.updateOrderStatus(order.id, OrderDraftStatus.PLACED)
+        if (dao.deliveryForOrder(order.id) != null) return
+        val lines = dao.orderLinesForDraft(order.id)
+        if (lines.isEmpty()) return
+        val deliveryId = dao.insertDelivery(
+            DeliveryRecord(
+                truckScheduleId = order.truckScheduleId,
+                orderDraftId = order.id,
+                deliveryDate = order.expectedDeliveryDate,
+                notes = "Created from placed order draft. Enter actual received quantities on delivery day."
+            )
+        )
+        lines.forEach { line ->
+            dao.insertDeliveryLine(
+                DeliveryLine(
+                    deliveryRecordId = deliveryId,
+                    productId = line.productId,
+                    orderedQuantity = line.userQuantity,
+                    expectedQuantity = line.userQuantity,
+                    actualQuantity = 0.0,
+                    unit = line.unit,
+                    variance = -line.userQuantity,
+                    status = DeliveryStatus.NOT_RECEIVED,
+                    notes = "Awaiting delivery check."
+                )
+            )
+        }
+    }
+
+    suspend fun updateDeliveryActual(line: DeliveryLine, actualQuantity: Double) {
+        val actual = max(0.0, actualQuantity)
+        val variance = actual - line.expectedQuantity
+        val status = when {
+            actual <= 0.0 -> DeliveryStatus.NOT_RECEIVED
+            variance < 0.0 -> DeliveryStatus.SHORT
+            variance > 0.0 -> DeliveryStatus.OVER
+            else -> DeliveryStatus.MATCHES_EXPECTED
+        }
+        val note = when (status) {
+            DeliveryStatus.NOT_RECEIVED -> "Not received yet."
+            DeliveryStatus.SHORT -> "Received less than expected. Watch supply before next truck."
+            DeliveryStatus.OVER -> "Received more than expected. Review for allocation, duplicate order, or manual override."
+            DeliveryStatus.MATCHES_EXPECTED -> "Delivery matches expected quantity."
+            else -> "Review delivery line."
+        }
+        dao.updateDeliveryLineActual(line.id, actual, variance, status, note)
+    }
 
     suspend fun addForecastToDraft(product: Product, truck: TruckSchedule, quantity: Double, reason: String): Long {
         val now = System.currentTimeMillis()
