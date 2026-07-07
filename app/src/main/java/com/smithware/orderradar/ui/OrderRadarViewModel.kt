@@ -1,0 +1,77 @@
+package com.smithware.orderradar.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.smithware.orderradar.OrderRadarApp
+import com.smithware.orderradar.data.*
+import com.smithware.orderradar.domain.*
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+data class OrderRadarUiState(
+    val snapshots: List<ProductSnapshot> = emptyList(),
+    val forecasts: List<ForecastResult> = emptyList(),
+    val trucks: List<TruckSchedule> = emptyList(),
+    val orders: List<OrderDraft> = emptyList(),
+    val orderLines: List<OrderLine> = emptyList(),
+    val deliveries: List<DeliveryRecord> = emptyList(),
+    val deliveryLines: List<DeliveryLine> = emptyList(),
+    val variances: List<VarianceLog> = emptyList(),
+    val displays: List<DisplayPlan> = emptyList(),
+    val recipes: List<Recipe> = emptyList(),
+    val recipeIngredients: List<RecipeIngredient> = emptyList()
+)
+
+class OrderRadarViewModel(application: Application) : AndroidViewModel(application) {
+    private val repo = (application as OrderRadarApp).repository
+
+    val state: StateFlow<OrderRadarUiState> = combine(
+        repo.snapshots,
+        repo.trucks,
+        repo.orders,
+        repo.orderLines,
+        repo.deliveries,
+        repo.deliveryLines,
+        repo.variances,
+        repo.displays,
+        repo.recipes,
+        repo.recipeIngredients
+    ) { values ->
+        val snapshots = values[0] as List<ProductSnapshot>
+        val forecasts = snapshots.map { ForecastEngine.forecast(it, repo.nextTruckDays(it.truck)) }
+        OrderRadarUiState(
+            snapshots = snapshots,
+            forecasts = forecasts,
+            trucks = values[1] as List<TruckSchedule>,
+            orders = values[2] as List<OrderDraft>,
+            orderLines = values[3] as List<OrderLine>,
+            deliveries = values[4] as List<DeliveryRecord>,
+            deliveryLines = values[5] as List<DeliveryLine>,
+            variances = values[6] as List<VarianceLog>,
+            displays = values[7] as List<DisplayPlan>,
+            recipes = values[8] as List<Recipe>,
+            recipeIngredients = values[9] as List<RecipeIngredient>
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), OrderRadarUiState())
+
+    init {
+        viewModelScope.launch { repo.seedIfNeeded() }
+    }
+
+    fun addCount(product: Product, quantity: Double, note: String = "Manual cooler count") = viewModelScope.launch {
+        repo.addCount(product, quantity, note)
+    }
+
+    fun addMovement(product: Product, quantity: Double, type: MovementType = MovementType.USED, note: String = "Manual usage entry") = viewModelScope.launch {
+        repo.addMovement(product, quantity, type, note)
+    }
+
+    fun addVariance(product: Product, ordered: Double, received: Double) = viewModelScope.launch {
+        val (_, reason) = DeliveryVarianceEngine.evaluate(ordered, received)
+        repo.addVariance(product, ordered, received, reason)
+    }
+}
