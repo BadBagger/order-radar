@@ -45,6 +45,8 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var tab by remember { mutableStateOf(Tab.Home) }
     var detailProductId by remember { mutableStateOf<Long?>(null) }
+    var showProducts by remember { mutableStateOf(false) }
+    var editProductId by remember { mutableStateOf<Long?>(null) }
     var showPhotoReview by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -54,7 +56,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                 Tab.entries.forEach { item ->
                     NavigationBarItem(
                         selected = item == tab,
-                        onClick = { tab = item; detailProductId = null },
+                        onClick = { tab = item; detailProductId = null; showProducts = false; editProductId = null },
                         icon = { Icon(item.icon, contentDescription = item.label) },
                         label = { Text(item.label, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = RadarCharcoal, selectedTextColor = RadarLime, indicatorColor = RadarLime, unselectedIconColor = RadarMuted, unselectedTextColor = RadarMuted)
@@ -65,14 +67,30 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
     ) { padding ->
         Box(Modifier.padding(padding)) {
             val product = detailProductId?.let { id -> state.snapshots.firstOrNull { it.product.id == id } }
+            val editProduct = editProductId?.let { id -> state.product(id) }
             when {
                 showPhotoReview -> CameraOcrAssistScreen(
                     products = state.snapshots.map { it.product },
                     onSaveCount = vm::addCount,
                     onBack = { showPhotoReview = false }
                 )
-                product != null -> ProductDetailScreen(snapshot = product, forecast = state.forecasts.firstOrNull { it.productId == product.product.id }, onBack = { detailProductId = null }, onCount = { tab = Tab.Count; detailProductId = null }, onUsage = { vm.addMovement(product.product, 1.0) })
-                tab == Tab.Home -> HomeDashboardScreen(state, onOpenProduct = { detailProductId = it }, onPhotoReview = { showPhotoReview = true })
+                editProductId != null -> ProductEditorScreen(
+                    product = editProduct,
+                    onBack = { editProductId = null },
+                    onSave = { productToSave ->
+                        vm.saveProduct(productToSave)
+                        editProductId = null
+                    }
+                )
+                showProducts -> ProductListScreen(
+                    state = state,
+                    onBack = { showProducts = false },
+                    onOpenProduct = { detailProductId = it; showProducts = false },
+                    onAddProduct = { editProductId = 0L },
+                    onEditProduct = { editProductId = it }
+                )
+                product != null -> ProductDetailScreen(snapshot = product, forecast = state.forecasts.firstOrNull { it.productId == product.product.id }, onBack = { detailProductId = null }, onCount = { tab = Tab.Count; detailProductId = null }, onUsage = { vm.addMovement(product.product, 1.0) }, onEdit = { editProductId = product.product.id })
+                tab == Tab.Home -> HomeDashboardScreen(state, onOpenProduct = { detailProductId = it }, onProductList = { showProducts = true }, onPhotoReview = { showPhotoReview = true })
                 tab == Tab.Count -> CoolerCountScreen(state, onSaveCount = vm::addCount, onSaveMovement = vm::addMovement, onPhotoReview = { showPhotoReview = true })
                 tab == Tab.Orders -> OrdersScreen(state, onVariance = vm::addVariance)
                 tab == Tab.Displays -> DisplaysScreen(state)
@@ -83,9 +101,20 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
 }
 
 @Composable
-private fun HomeDashboardScreen(state: OrderRadarUiState, onOpenProduct: (Long) -> Unit, onPhotoReview: () -> Unit) {
+private fun HomeDashboardScreen(state: OrderRadarUiState, onOpenProduct: (Long) -> Unit, onProductList: () -> Unit, onPhotoReview: () -> Unit) {
     Screen("Order Radar", "Forecast orders before you run out.") {
-        BigActionButton("Count what's in the cooler", Icons.Default.AddTask) { }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onProductList, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) {
+                Icon(Icons.Default.Inventory2, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Products")
+            }
+            OutlinedButton(onClick = onPhotoReview, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) {
+                Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Photo")
+            }
+        }
         SectionHeader("Needs Order")
         state.forecasts.filter { it.status == ForecastStatus.ORDER_NEEDED || it.status == ForecastStatus.CRITICAL }.take(4).forEach { forecast ->
             val snapshot = state.snapshot(forecast.productId) ?: return@forEach
@@ -267,8 +296,132 @@ private fun ReportsScreen(state: OrderRadarUiState) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ProductDetailScreen(snapshot: ProductSnapshot, forecast: ForecastResult?, onBack: () -> Unit, onCount: () -> Unit, onUsage: () -> Unit) {
+private fun ProductListScreen(
+    state: OrderRadarUiState,
+    onBack: () -> Unit,
+    onOpenProduct: (Long) -> Unit,
+    onAddProduct: () -> Unit,
+    onEditProduct: (Long) -> Unit
+) {
+    var search by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf("All") }
+    val options = listOf("All", "Needs", "Watch", "Good", "Displays", "Box meat", "GGM", "Vendor", "Warehouse")
+    val filtered = state.snapshots.filter { snapshot ->
+        val product = snapshot.product
+        val forecast = state.forecasts.firstOrNull { it.productId == product.id }
+        val matchesSearch = search.isBlank() || product.name.contains(search, ignoreCase = true) || product.category.name.contains(search, ignoreCase = true) || product.vendor.orEmpty().contains(search, ignoreCase = true)
+        val matchesFilter = when (filter) {
+            "Needs" -> forecast?.status in setOf(ForecastStatus.ORDER_NEEDED, ForecastStatus.CRITICAL)
+            "Watch" -> forecast?.status == ForecastStatus.WATCH
+            "Good" -> forecast?.status == ForecastStatus.GOOD
+            "Displays" -> product.category == ProductCategory.DISPLAY
+            "Box meat" -> product.category == ProductCategory.BOX_MEAT
+            "GGM" -> product.category == ProductCategory.GGM
+            "Vendor" -> product.category == ProductCategory.VENDOR || product.vendor.orEmpty().contains("vendor", ignoreCase = true)
+            "Warehouse" -> product.category == ProductCategory.WAREHOUSE || product.vendor.orEmpty().contains("warehouse", ignoreCase = true)
+            else -> true
+        }
+        matchesSearch && matchesFilter
+    }
+    Screen("Products", "Search products, review forecast status, and edit setup.", onBack = onBack) {
+        BigActionButton("Add Product", Icons.Default.Add) { onAddProduct() }
+        OutlinedTextField(
+            value = search,
+            onValueChange = { search = it },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            label = { Text("Search products") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            options.forEach { option ->
+                FilterChip(selected = filter == option, onClick = { filter = option }, label = { Text(option) })
+            }
+        }
+        if (filtered.isEmpty()) {
+            SimpleCard {
+                Text("No products match this view.", fontWeight = FontWeight.SemiBold)
+                Text("Try All or add a product for this truck/order workflow.", color = RadarMuted)
+            }
+        }
+        filtered.forEach { snapshot ->
+            val forecast = state.forecasts.firstOrNull { it.productId == snapshot.product.id }
+            SimpleCard(onClick = { onOpenProduct(snapshot.product.id) }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ProductThumb(snapshot.product.category)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(snapshot.product.name, fontWeight = FontWeight.SemiBold)
+                        Text("${snapshot.product.category.name.readable()} | ${snapshot.product.defaultUnit} | ${snapshot.product.vendor ?: "No vendor"}", color = RadarMuted)
+                        Text("On hand: ${forecast?.currentOnHand?.clean() ?: "0"} | Recommended: ${forecast?.recommendedOrderQuantity?.clean() ?: "0"}", color = RadarMuted)
+                    }
+                    IconButton(onClick = { onEditProduct(snapshot.product.id) }) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit product")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (Product) -> Unit) {
+    val isNew = product == null
+    var name by remember(product) { mutableStateOf(product?.name ?: "") }
+    var category by remember(product) { mutableStateOf(product?.category ?: ProductCategory.BOX_MEAT) }
+    var vendor by remember(product) { mutableStateOf(product?.vendor ?: "") }
+    var location by remember(product) { mutableStateOf(product?.storageLocation ?: "") }
+    var unit by remember(product) { mutableStateOf(product?.defaultUnit ?: "boxes") }
+    var caseSize by remember(product) { mutableStateOf(product?.caseSize ?: "") }
+    var safetyStock by remember(product) { mutableStateOf(product?.safetyStock?.clean() ?: "1") }
+    var reorderPoint by remember(product) { mutableStateOf(product?.reorderPoint?.clean() ?: "1") }
+    var notes by remember(product) { mutableStateOf(product?.notes ?: "") }
+    Screen(if (isNew) "Add Product" else "Edit Product", "Set the product up once, then count and forecast it.", onBack = onBack) {
+        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Product name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        EnumPicker("Category", category, ProductCategory.entries) { category = it }
+        OutlinedTextField(value = vendor, onValueChange = { vendor = it }, label = { Text("Vendor / warehouse") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = location, onValueChange = { location = it }, label = { Text("Cooler / shelf location") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OptionPicker("Unit", unit, listOf("boxes", "cases", "pounds", "eaches", "trays")) { unit = it }
+        OutlinedTextField(value = caseSize, onValueChange = { caseSize = it }, label = { Text("Case size") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(value = safetyStock, onValueChange = { safetyStock = it }, label = { Text("Safety stock") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.weight(1f))
+            OutlinedTextField(value = reorderPoint, onValueChange = { reorderPoint = it }, label = { Text("Reorder point") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.weight(1f))
+        }
+        OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text("Notes") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+        BigActionButton("Save Product", Icons.Default.Save) {
+            if (name.isNotBlank()) {
+                val now = System.currentTimeMillis()
+                onSave(
+                    Product(
+                        id = product?.id ?: 0,
+                        name = name.trim(),
+                        category = category,
+                        vendor = vendor.ifBlank { null },
+                        storageLocation = location.ifBlank { null },
+                        defaultUnit = unit,
+                        caseSize = caseSize.ifBlank { null },
+                        safetyStock = safetyStock.toDoubleOrNull() ?: 0.0,
+                        reorderPoint = reorderPoint.toDoubleOrNull() ?: 0.0,
+                        notes = notes.ifBlank { null },
+                        createdAt = product?.createdAt ?: now,
+                        updatedAt = now,
+                        itemNumber = product?.itemNumber,
+                        upc = product?.upc,
+                        department = product?.department ?: "Deli",
+                        boxWeight = product?.boxWeight,
+                        active = product?.active ?: true,
+                        productPhotoUri = product?.productPhotoUri
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductDetailScreen(snapshot: ProductSnapshot, forecast: ForecastResult?, onBack: () -> Unit, onCount: () -> Unit, onUsage: () -> Unit, onEdit: () -> Unit) {
     val product = snapshot.product
     Screen(product.name, product.category.name.readable(), onBack = onBack) {
         SimpleCard {
@@ -287,6 +440,11 @@ private fun ProductDetailScreen(snapshot: ProductSnapshot, forecast: ForecastRes
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             Button(onClick = onCount, modifier = Modifier.weight(1f)) { Text("Update Count") }
             OutlinedButton(onClick = onUsage, modifier = Modifier.weight(1f)) { Text("Add Usage") }
+        }
+        OutlinedButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.Edit, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Edit Product")
         }
         listOf("Open order suggestions", "Recent deliveries", "Display links", "Recipe/production links", "Notes").forEach {
             SimpleCard { Text(it, fontWeight = FontWeight.SemiBold); Text(product.notes ?: "No saved notes yet.", color = RadarMuted) }
@@ -501,6 +659,44 @@ private fun ProductPicker(products: List<Product>, selectedId: Long, onSelect: (
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             products.forEach { product ->
                 DropdownMenuItem(text = { Text(product.name) }, onClick = { onSelect(product.id); expanded = false })
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T : Enum<T>> EnumPicker(label: String, selected: T, options: List<T>, onSelect: (T) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text(label, color = RadarMuted, style = MaterialTheme.typography.labelSmall)
+                Text(selected.name.readable())
+            }
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(text = { Text(option.name.readable()) }, onClick = { onSelect(option); expanded = false })
+            }
+        }
+    }
+}
+
+@Composable
+private fun OptionPicker(label: String, selected: String, options: List<String>, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text(label, color = RadarMuted, style = MaterialTheme.typography.labelSmall)
+                Text(selected)
+            }
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(text = { Text(option) }, onClick = { onSelect(option); expanded = false })
             }
         }
     }

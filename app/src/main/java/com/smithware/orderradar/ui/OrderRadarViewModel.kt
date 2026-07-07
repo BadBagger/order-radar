@@ -70,6 +70,10 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.addMovement(product, quantity, type, note)
     }
 
+    fun saveProduct(product: Product) = viewModelScope.launch {
+        repo.saveProduct(product)
+    }
+
     fun addVariance(product: Product, ordered: Double, received: Double) = viewModelScope.launch {
         val (_, reason) = DeliveryVarianceEngine.evaluate(ordered, received)
         repo.addVariance(product, ordered, received, reason)
