@@ -102,6 +102,16 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
         }
         return orderId
     }
+    suspend fun updateOrderLineQuantity(line: OrderLine, quantity: Double) {
+        if (quantity <= 0.0) {
+            dao.deleteOrderLine(line.id)
+        } else {
+            dao.updateOrderLineQuantity(line.id, quantity)
+        }
+    }
+
+    suspend fun markOrderPlaced(order: OrderDraft) = dao.updateOrderStatus(order.id, OrderDraftStatus.PLACED)
+
     suspend fun addVariance(product: Product, ordered: Double, received: Double, reason: String) {
         val difference = received - ordered
         val type = if (difference > 0) VarianceType.RECEIVED_MORE_THAN_ORDERED else VarianceType.RECEIVED_LESS_THAN_ORDERED

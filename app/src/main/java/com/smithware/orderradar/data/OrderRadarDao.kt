@@ -68,6 +68,15 @@ interface OrderRadarDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrderLine(line: OrderLine): Long
 
+    @Query("UPDATE OrderLine SET userQuantity = :quantity, updatedAt = :updatedAt WHERE id = :lineId")
+    suspend fun updateOrderLineQuantity(lineId: Long, quantity: Double, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("DELETE FROM OrderLine WHERE id = :lineId")
+    suspend fun deleteOrderLine(lineId: Long)
+
+    @Query("UPDATE OrderDraft SET status = :status, updatedAt = :updatedAt WHERE id = :orderId")
+    suspend fun updateOrderStatus(orderId: Long, status: OrderDraftStatus, updatedAt: Long = System.currentTimeMillis())
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDelivery(record: DeliveryRecord): Long
 

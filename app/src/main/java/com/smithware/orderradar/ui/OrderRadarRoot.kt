@@ -99,7 +99,13 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                 product != null -> ProductDetailScreen(snapshot = product, forecast = state.forecasts.firstOrNull { it.productId == product.product.id }, onBack = { detailProductId = null }, onCount = { tab = Tab.Count; detailProductId = null }, onUsage = { vm.addMovement(product.product, 1.0) }, onEdit = { editProductId = product.product.id })
                 tab == Tab.Home -> HomeDashboardScreen(state, onOpenProduct = { detailProductId = it }, onProductList = { showProducts = true }, onPhotoReview = { showPhotoReview = true })
                 tab == Tab.Count -> CoolerCountScreen(state, onSaveCount = vm::addCount, onSaveMovement = vm::addMovement, onPhotoReview = { showPhotoReview = true })
-                tab == Tab.Orders -> OrdersScreen(state, onVariance = vm::addVariance, onImportPhoto = { showOrderImport = true })
+                tab == Tab.Orders -> OrdersScreen(
+                    state = state,
+                    onVariance = vm::addVariance,
+                    onImportPhoto = { showOrderImport = true },
+                    onUpdateLine = vm::updateOrderLineQuantity,
+                    onMarkPlaced = vm::markOrderPlaced
+                )
                 tab == Tab.Displays -> DisplaysScreen(state)
                 tab == Tab.Reports -> ReportsScreen(state)
             }
@@ -186,7 +192,13 @@ private fun CoolerCountScreen(state: OrderRadarUiState, onSaveCount: (Product, D
 }
 
 @Composable
-private fun OrdersScreen(state: OrderRadarUiState, onVariance: (Product, Double, Double) -> Unit, onImportPhoto: () -> Unit) {
+private fun OrdersScreen(
+    state: OrderRadarUiState,
+    onVariance: (Product, Double, Double) -> Unit,
+    onImportPhoto: () -> Unit,
+    onUpdateLine: (OrderLine, Double) -> Unit,
+    onMarkPlaced: (OrderDraft) -> Unit
+) {
     var selected by remember { mutableStateOf("Forecast") }
     Screen("Orders", "Build orders, check deliveries, and explain surprises.") {
         SegmentedButtonRow(selected, listOf("Forecast", "Builder", "Delivery", "Variance", "Trucks")) { selected = it }
@@ -197,7 +209,7 @@ private fun OrdersScreen(state: OrderRadarUiState, onVariance: (Product, Double,
                     ForecastCard(snapshot, forecast)
                 }
             }
-            "Builder" -> OrderBuilderSection(state, onImportPhoto)
+            "Builder" -> OrderBuilderSection(state, onImportPhoto, onUpdateLine, onMarkPlaced)
             "Delivery" -> DeliveryDaySection(state, onVariance)
             "Variance" -> state.variances.forEach { DeliveryVarianceCard(state.product(it.productId)?.name ?: "Product", it) }
             "Trucks" -> state.trucks.forEach { TruckCard(it) }
@@ -206,7 +218,13 @@ private fun OrdersScreen(state: OrderRadarUiState, onVariance: (Product, Double,
 }
 
 @Composable
-private fun OrderBuilderSection(state: OrderRadarUiState, onImportPhoto: () -> Unit) {
+private fun OrderBuilderSection(
+    state: OrderRadarUiState,
+    onImportPhoto: () -> Unit,
+    onUpdateLine: (OrderLine, Double) -> Unit,
+    onMarkPlaced: (OrderDraft) -> Unit
+) {
+    val clipboard = LocalClipboardManager.current
     val lines = state.forecasts.filter { it.recommendedOrderQuantity > 0.0 }
     val latestDraft = state.orders.firstOrNull { it.status == OrderDraftStatus.DRAFT }
     val savedLines = latestDraft?.let { order -> state.orderLines.filter { it.orderDraftId == order.id } }.orEmpty()
@@ -220,14 +238,37 @@ private fun OrderBuilderSection(state: OrderRadarUiState, onImportPhoto: () -> U
         savedLines.forEach { line ->
             val product = state.product(line.productId) ?: return@forEach
             SimpleCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Column(Modifier.weight(1f)) {
                         Text(product.name, fontWeight = FontWeight.SemiBold)
                         Text("Draft quantity: ${line.userQuantity.clean()} ${line.unit}", color = RadarText)
                         Text(line.reason, color = RadarMuted)
                     }
-                    StatusChip("Draft", ForecastStatus.WATCH)
+                    FilledIconButton(
+                        onClick = { onUpdateLine(line, (line.userQuantity - 1.0).coerceAtLeast(0.0)) },
+                        modifier = Modifier.size(42.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = RadarPanel, contentColor = RadarText)
+                    ) {
+                        Icon(Icons.Default.Remove, contentDescription = "Decrease")
+                    }
+                    FilledIconButton(
+                        onClick = { onUpdateLine(line, line.userQuantity + 1.0) },
+                        modifier = Modifier.size(42.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = RadarLime, contentColor = RadarCharcoal)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Increase")
+                    }
                 }
+            }
+        }
+        if (savedLines.isNotEmpty()) {
+            BigActionButton("Copy Draft Summary", Icons.Default.ContentCopy) {
+                clipboard.setText(AnnotatedString(buildOrderDraftSummary(state, latestDraft, savedLines)))
+            }
+            OutlinedButton(onClick = { onMarkPlaced(latestDraft) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Done, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Mark Order Placed")
             }
         }
         SectionHeader("Forecast suggestions")
@@ -767,6 +808,7 @@ private fun OrderRadarUiState.snapshot(productId: Long) = snapshots.firstOrNull 
 private fun OrderRadarUiState.product(productId: Long) = snapshots.firstOrNull { it.product.id == productId }?.product
 
 private fun String.readable(): String = lowercase().split("_").joinToString(" ") { it.replaceFirstChar { char -> char.uppercase() } }
+private fun Long.shortDate(): String = SimpleDateFormat("MMM d", Locale.US).format(Date(this))
 
 private fun buildReport(state: OrderRadarUiState): String {
     val orderLines = state.forecasts.filter { it.recommendedOrderQuantity > 0.0 }.joinToString("\n") { forecast ->
@@ -792,5 +834,21 @@ private fun buildReport(state: OrderRadarUiState): String {
 
         Delivery Variance:
         ${variances.ifBlank { "- No delivery variance logged." }}
+    """.trimIndent()
+}
+
+private fun buildOrderDraftSummary(state: OrderRadarUiState, order: OrderDraft, lines: List<OrderLine>): String {
+    val body = lines.joinToString("\n") { line ->
+        val product = state.product(line.productId)
+        "- ${product?.name ?: "Product"}: ${line.userQuantity.clean()} ${line.unit}\n  Reason: ${line.reason}"
+    }
+    return """
+        ${order.title}
+        Expected delivery: ${order.expectedDeliveryDate.shortDate()}
+
+        ${body.ifBlank { "- No products in this draft." }}
+
+        Notes:
+        ${order.notes ?: "Confirm in workplace ordering system."}
     """.trimIndent()
 }
