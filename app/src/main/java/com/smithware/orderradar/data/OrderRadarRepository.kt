@@ -70,6 +70,9 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
     }
 
     suspend fun addCount(product: Product, quantity: Double, note: String) = dao.insertCount(InventoryCount(productId = product.id, quantity = quantity, unit = product.defaultUnit, notes = note))
+    suspend fun addCountWithPhoto(product: Product, quantity: Double, note: String, photoUri: String?) = dao.insertCount(
+        InventoryCount(productId = product.id, quantity = quantity, unit = product.defaultUnit, source = CountSource.PHOTO_ASSIST, photoUri = photoUri, notes = note)
+    )
     suspend fun addMovement(product: Product, quantity: Double, type: MovementType, note: String) = dao.insertMovement(MovementEntry(productId = product.id, quantity = quantity, unit = product.defaultUnit, movementType = type, notes = note))
     suspend fun saveProduct(product: Product): Long = dao.upsertProduct(product.copy(updatedAt = System.currentTimeMillis()))
     suspend fun createOrderFromPhoto(
