@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -43,12 +44,14 @@ private enum class Tab(val label: String, val icon: ImageVector) {
 @Composable
 fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
     val state by vm.state.collectAsState()
+    val settings by vm.settings.collectAsState()
     var tab by remember { mutableStateOf(Tab.Home) }
     var detailProductId by remember { mutableStateOf<Long?>(null) }
     var showProducts by remember { mutableStateOf(false) }
     var editProductId by remember { mutableStateOf<Long?>(null) }
     var showPhotoReview by remember { mutableStateOf(false) }
     var showOrderImport by remember { mutableStateOf(false) }
+    var showVisionCount by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = RadarCharcoal,
@@ -57,7 +60,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                 Tab.entries.forEach { item ->
                     NavigationBarItem(
                         selected = item == tab,
-                        onClick = { tab = item; detailProductId = null; showProducts = false; editProductId = null; showOrderImport = false },
+                        onClick = { tab = item; detailProductId = null; showProducts = false; editProductId = null; showOrderImport = false; showVisionCount = false },
                         icon = { Icon(item.icon, contentDescription = item.label) },
                         label = { Text(item.label, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = RadarCharcoal, selectedTextColor = RadarLime, indicatorColor = RadarLime, unselectedIconColor = RadarMuted, unselectedTextColor = RadarMuted)
@@ -70,6 +73,14 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
             val product = detailProductId?.let { id -> state.snapshots.firstOrNull { it.product.id == id } }
             val editProduct = editProductId?.let { id -> state.product(id) }
             when {
+                showVisionCount -> PhotoVisionCountScreen(
+                    products = state.snapshots.map { it.product },
+                    apiKey = settings.visionApiKey,
+                    model = settings.visionModel,
+                    onSaveCounts = { rows, photoPath -> vm.saveVisionCounts(rows, photoPath) },
+                    onOpenSettings = { showVisionCount = false; tab = Tab.Reports },
+                    onBack = { showVisionCount = false }
+                )
                 showPhotoReview -> CameraOcrAssistScreen(
                     products = state.snapshots.map { it.product },
                     onSaveCount = vm::addCount,
@@ -97,8 +108,8 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onEditProduct = { editProductId = it }
                 )
                 product != null -> ProductDetailScreen(snapshot = product, forecast = state.forecasts.firstOrNull { it.productId == product.product.id }, onBack = { detailProductId = null }, onCount = { tab = Tab.Count; detailProductId = null }, onUsage = { vm.addMovement(product.product, 1.0) }, onEdit = { editProductId = product.product.id })
-                tab == Tab.Home -> HomeDashboardScreen(state, onOpenProduct = { detailProductId = it }, onProductList = { showProducts = true }, onPhotoReview = { showPhotoReview = true })
-                tab == Tab.Count -> CoolerCountScreen(state, onSaveCount = vm::addCount, onSaveMovement = vm::addMovement, onPhotoReview = { showPhotoReview = true })
+                tab == Tab.Home -> HomeDashboardScreen(state, onOpenProduct = { detailProductId = it }, onProductList = { showProducts = true }, onPhotoReview = { showPhotoReview = true }, onVisionCount = { showVisionCount = true })
+                tab == Tab.Count -> CoolerCountScreen(state, onSaveCount = vm::addCount, onSaveMovement = vm::addMovement, onPhotoReview = { showPhotoReview = true }, onVisionCount = { showVisionCount = true })
                 tab == Tab.Orders -> OrdersScreen(
                     state = state,
                     onVariance = vm::addVariance,
@@ -109,14 +120,14 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onUpdateDelivery = vm::updateDeliveryActual
                 )
                 tab == Tab.Displays -> DisplaysScreen(state)
-                tab == Tab.Reports -> ReportsScreen(state)
+                tab == Tab.Reports -> ReportsScreen(state, settings, onSaveVisionSettings = vm::updateVisionSettings)
             }
         }
     }
 }
 
 @Composable
-private fun HomeDashboardScreen(state: OrderRadarUiState, onOpenProduct: (Long) -> Unit, onProductList: () -> Unit, onPhotoReview: () -> Unit) {
+private fun HomeDashboardScreen(state: OrderRadarUiState, onOpenProduct: (Long) -> Unit, onProductList: () -> Unit, onPhotoReview: () -> Unit, onVisionCount: () -> Unit) {
     Screen("Order Radar", "Forecast orders before you run out.") {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             Button(onClick = onProductList, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) {
@@ -152,12 +163,12 @@ private fun HomeDashboardScreen(state: OrderRadarUiState, onOpenProduct: (Long) 
         }
         SectionHeader("Upcoming Trucks")
         state.trucks.forEach { TruckCard(it) }
-        PhotoCaptureCard(onPhotoReview)
+        PhotoCaptureCard(onPhotoReview, onVisionCount)
     }
 }
 
 @Composable
-private fun CoolerCountScreen(state: OrderRadarUiState, onSaveCount: (Product, Double, String) -> Unit, onSaveMovement: (Product, Double, MovementType, String) -> Unit, onPhotoReview: () -> Unit) {
+private fun CoolerCountScreen(state: OrderRadarUiState, onSaveCount: (Product, Double, String) -> Unit, onSaveMovement: (Product, Double, MovementType, String) -> Unit, onPhotoReview: () -> Unit, onVisionCount: () -> Unit) {
     var selectedId by remember(state.snapshots) { mutableStateOf(state.snapshots.firstOrNull()?.product?.id ?: 0L) }
     var quantity by remember { mutableStateOf("2") }
     val selected = state.product(selectedId) ?: state.snapshots.firstOrNull()?.product
@@ -171,7 +182,7 @@ private fun CoolerCountScreen(state: OrderRadarUiState, onSaveCount: (Product, D
         }
         BigActionButton("Save Count", Icons.Default.Save) { selected?.let { onSaveCount(it, quantity.toDoubleOrNull() ?: 0.0, "Manual cooler count") } }
         OutlinedButton(onClick = { quantity = "0"; selected?.let { onSaveCount(it, 0.0, "Marked empty") } }, modifier = Modifier.fillMaxWidth()) { Text("Mark Empty") }
-        PhotoCaptureCard(onPhotoReview)
+        PhotoCaptureCard(onPhotoReview, onVisionCount)
         SectionHeader("Movement Tracker")
         NumberEntry("Add usage", "1", selected?.defaultUnit ?: "units") { }
         BigActionButton("Log 1 used", Icons.Default.TrendingDown) { selected?.let { onSaveMovement(it, 1.0, MovementType.USED, "Manual usage entry") } }
@@ -401,7 +412,7 @@ private fun DisplayDetailScreen(state: OrderRadarUiState, display: DisplayPlan, 
 }
 
 @Composable
-private fun ReportsScreen(state: OrderRadarUiState) {
+private fun ReportsScreen(state: OrderRadarUiState, settings: AppSettings, onSaveVisionSettings: (String, String) -> Unit) {
     val clipboard = LocalClipboardManager.current
     val report = buildReport(state)
     Screen("Reports", "Copyable plain-text manager summaries.") {
@@ -413,7 +424,7 @@ private fun ReportsScreen(state: OrderRadarUiState) {
             Text(report, color = RadarMuted)
         }
         BigActionButton("Copy Report", Icons.Default.ContentCopy) { clipboard.setText(AnnotatedString(report)) }
-        SettingsSection()
+        SettingsSection(settings, onSaveVisionSettings)
     }
 }
 
@@ -682,19 +693,22 @@ private fun ReportCard(title: String) {
 }
 
 @Composable
-private fun PhotoCaptureCard(onPhotoReview: () -> Unit) {
+private fun PhotoCaptureCard(onPhotoReview: () -> Unit, onVisionCount: () -> Unit) {
     SimpleCard {
         Text("Photo / OCR Assist", fontWeight = FontWeight.Bold)
-        Text("Take cooler photo, scan product label, or enter manually. User confirmation is required before saving.", color = RadarMuted)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = onPhotoReview, modifier = Modifier.weight(1f)) { Icon(Icons.Default.PhotoCamera, null); Spacer(Modifier.width(6.dp)); Text("Take Photo") }
-            OutlinedButton(onClick = onPhotoReview, modifier = Modifier.weight(1f)) { Icon(Icons.Default.TextSnippet, null); Spacer(Modifier.width(6.dp)); Text("Scan Label") }
+        Text("Scan a label or order sheet, or enter manually. User confirmation is required before saving.", color = RadarMuted)
+        OutlinedButton(onClick = onPhotoReview, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.TextSnippet, null); Spacer(Modifier.width(6.dp)); Text("Scan Label") }
+        Spacer(Modifier.height(4.dp))
+        Text("AI Shelf Count", fontWeight = FontWeight.Bold)
+        Text("Photograph a shelf or cooler and let AI estimate how many of each product are visible. Needs an API key in Settings.", color = RadarMuted)
+        Button(onClick = onVisionCount, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal)) {
+            Icon(Icons.Default.AutoAwesome, null); Spacer(Modifier.width(6.dp)); Text("AI Shelf Count")
         }
     }
 }
 
 @Composable
-private fun SettingsSection() {
+private fun SettingsSection(settings: AppSettings, onSaveVisionSettings: (String, String) -> Unit) {
     SectionHeader("Settings / Privacy")
     SimpleCard {
         Text("Smithware Studios", fontWeight = FontWeight.Bold)
@@ -703,6 +717,28 @@ private fun SettingsSection() {
         Text("Order Radar stores product counts, order drafts, delivery notes, photos, and usage history locally on this device. Smithware Studios does not receive or upload your workplace data in this MVP.", color = RadarMuted)
         Spacer(Modifier.height(6.dp))
         Text("Order Radar is a personal organization and forecasting tool. It does not replace your workplace's official inventory, ordering, food safety, or compliance systems. Always follow your workplace's official procedures.", color = RadarOrange)
+    }
+    SimpleCard {
+        Text("AI Shelf Count Setup", fontWeight = FontWeight.Bold)
+        Text("Optional. Add your own Anthropic API key to enable AI Shelf Count. The key is stored only on this device and is used to send photos you capture directly to Anthropic's API for item counting. Standard Anthropic API usage charges apply to your account. Leave blank to use manual or label-scan counting only.", color = RadarMuted)
+        var apiKey by remember(settings.visionApiKey) { mutableStateOf(settings.visionApiKey) }
+        var model by remember(settings.visionModel) { mutableStateOf(settings.visionModel) }
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            label = { Text("Anthropic API key") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = model,
+            onValueChange = { model = it },
+            label = { Text("Model") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        BigActionButton("Save AI Settings", Icons.Default.Save) { onSaveVisionSettings(apiKey, model) }
     }
 }
 

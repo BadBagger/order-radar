@@ -12,6 +12,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+data class VisionCountRow(
+    val suggestion: VisionCountSuggestion,
+    val matchedProduct: Product?
+)
+
 data class OrderRadarUiState(
     val snapshots: List<ProductSnapshot> = emptyList(),
     val forecasts: List<ForecastResult> = emptyList(),
@@ -28,6 +33,10 @@ data class OrderRadarUiState(
 
 class OrderRadarViewModel(application: Application) : AndroidViewModel(application) {
     private val repo = (application as OrderRadarApp).repository
+    private val settingsStore = SettingsStore(application)
+
+    val settings: StateFlow<AppSettings> = settingsStore.settings
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettings())
 
     val state: StateFlow<OrderRadarUiState> = combine(
         repo.snapshots,
@@ -98,5 +107,27 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
     fun addVariance(product: Product, ordered: Double, received: Double) = viewModelScope.launch {
         val (_, reason) = DeliveryVarianceEngine.evaluate(ordered, received)
         repo.addVariance(product, ordered, received, reason)
+    }
+
+    fun updateVisionSettings(apiKey: String, model: String) = viewModelScope.launch {
+        settingsStore.updateVisionSettings(apiKey, model)
+    }
+
+    fun saveVisionCounts(rows: List<VisionCountRow>, photoPath: String?) = viewModelScope.launch {
+        rows.forEach { row ->
+            val note = "AI shelf photo count (${row.suggestion.confidence} confidence). ${row.suggestion.notes}".trim()
+            val product = row.matchedProduct ?: run {
+                val newProduct = Product(
+                    name = row.suggestion.itemName,
+                    category = ProductCategory.OTHER,
+                    defaultUnit = row.suggestion.unit,
+                    safetyStock = settings.value.defaultSafetyStock,
+                    reorderPoint = settings.value.defaultSafetyStock,
+                    notes = "Created from AI shelf photo count."
+                )
+                newProduct.copy(id = repo.saveProduct(newProduct))
+            }
+            repo.addCountWithPhoto(product, row.suggestion.estimatedQuantity, note, photoPath)
+        }
     }
 }
