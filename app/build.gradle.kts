@@ -25,8 +25,8 @@ android {
         applicationId = "com.smithware.orderradar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.5.1-vision-multi-provider"
+        versionCode = 11
+        versionName = "0.5.2-vision-gallery-picker"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
