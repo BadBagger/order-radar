@@ -75,8 +75,9 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
             when {
                 showVisionCount -> PhotoVisionCountScreen(
                     products = state.snapshots.map { it.product },
-                    apiKey = settings.visionApiKey,
-                    model = settings.visionModel,
+                    provider = settings.visionProvider,
+                    apiKey = settings.activeVisionApiKey,
+                    model = settings.activeVisionModel,
                     onSaveCounts = { rows, photoPath -> vm.saveVisionCounts(rows, photoPath) },
                     onOpenSettings = { showVisionCount = false; tab = Tab.Reports },
                     onBack = { showVisionCount = false }
@@ -120,7 +121,13 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onUpdateDelivery = vm::updateDeliveryActual
                 )
                 tab == Tab.Displays -> DisplaysScreen(state)
-                tab == Tab.Reports -> ReportsScreen(state, settings, onSaveVisionSettings = vm::updateVisionSettings)
+                tab == Tab.Reports -> ReportsScreen(
+                    state,
+                    settings,
+                    onSetVisionProvider = vm::setVisionProvider,
+                    onSaveAnthropicVisionSettings = vm::updateAnthropicVisionSettings,
+                    onSaveOpenAiVisionSettings = vm::updateOpenAiVisionSettings
+                )
             }
         }
     }
@@ -412,7 +419,13 @@ private fun DisplayDetailScreen(state: OrderRadarUiState, display: DisplayPlan, 
 }
 
 @Composable
-private fun ReportsScreen(state: OrderRadarUiState, settings: AppSettings, onSaveVisionSettings: (String, String) -> Unit) {
+private fun ReportsScreen(
+    state: OrderRadarUiState,
+    settings: AppSettings,
+    onSetVisionProvider: (VisionProvider) -> Unit,
+    onSaveAnthropicVisionSettings: (String, String) -> Unit,
+    onSaveOpenAiVisionSettings: (String, String) -> Unit
+) {
     val clipboard = LocalClipboardManager.current
     val report = buildReport(state)
     Screen("Reports", "Copyable plain-text manager summaries.") {
@@ -424,7 +437,7 @@ private fun ReportsScreen(state: OrderRadarUiState, settings: AppSettings, onSav
             Text(report, color = RadarMuted)
         }
         BigActionButton("Copy Report", Icons.Default.ContentCopy) { clipboard.setText(AnnotatedString(report)) }
-        SettingsSection(settings, onSaveVisionSettings)
+        SettingsSection(settings, onSetVisionProvider, onSaveAnthropicVisionSettings, onSaveOpenAiVisionSettings)
     }
 }
 
@@ -708,7 +721,12 @@ private fun PhotoCaptureCard(onPhotoReview: () -> Unit, onVisionCount: () -> Uni
 }
 
 @Composable
-private fun SettingsSection(settings: AppSettings, onSaveVisionSettings: (String, String) -> Unit) {
+private fun SettingsSection(
+    settings: AppSettings,
+    onSetVisionProvider: (VisionProvider) -> Unit,
+    onSaveAnthropicVisionSettings: (String, String) -> Unit,
+    onSaveOpenAiVisionSettings: (String, String) -> Unit
+) {
     SectionHeader("Settings / Privacy")
     SimpleCard {
         Text("Smithware Studios", fontWeight = FontWeight.Bold)
@@ -719,14 +737,24 @@ private fun SettingsSection(settings: AppSettings, onSaveVisionSettings: (String
         Text("Order Radar is a personal organization and forecasting tool. It does not replace your workplace's official inventory, ordering, food safety, or compliance systems. Always follow your workplace's official procedures.", color = RadarOrange)
     }
     SimpleCard {
+        val provider = settings.visionProvider
+        val savedKeyForProvider = if (provider == VisionProvider.OPENAI) settings.openAiVisionApiKey else settings.anthropicVisionApiKey
+        val savedModelForProvider = if (provider == VisionProvider.OPENAI) settings.openAiVisionModel else settings.anthropicVisionModel
+        // Keyed on the provider too, not just the saved value -- switching providers must show
+        // that provider's own saved key/model instead of leftover draft text from the other.
+        var apiKey by remember(provider, savedKeyForProvider) { mutableStateOf(savedKeyForProvider) }
+        var model by remember(provider, savedModelForProvider) { mutableStateOf(savedModelForProvider) }
+
         Text("AI Shelf Count Setup", fontWeight = FontWeight.Bold)
-        Text("Optional. Add your own Anthropic API key to enable AI Shelf Count. The key is stored only on this device and is used to send photos you capture directly to Anthropic's API for item counting. Standard Anthropic API usage charges apply to your account. Leave blank to use manual or label-scan counting only.", color = RadarMuted)
-        var apiKey by remember(settings.visionApiKey) { mutableStateOf(settings.visionApiKey) }
-        var model by remember(settings.visionModel) { mutableStateOf(settings.visionModel) }
+        Text("Optional. Add your own OpenAI or Anthropic API key to enable AI Shelf Count. The key is stored only on this device and is used to send photos you capture directly to that provider's API for item counting. Standard API usage charges apply to your account. Leave blank to use manual or label-scan counting only.", color = RadarMuted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = provider == VisionProvider.OPENAI, onClick = { onSetVisionProvider(VisionProvider.OPENAI) }, label = { Text("OpenAI") })
+            FilterChip(selected = provider == VisionProvider.ANTHROPIC, onClick = { onSetVisionProvider(VisionProvider.ANTHROPIC) }, label = { Text("Anthropic (Claude)") })
+        }
         OutlinedTextField(
             value = apiKey,
             onValueChange = { apiKey = it },
-            label = { Text("Anthropic API key") },
+            label = { Text(if (provider == VisionProvider.OPENAI) "OpenAI API key" else "Anthropic API key") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth()
@@ -738,7 +766,19 @@ private fun SettingsSection(settings: AppSettings, onSaveVisionSettings: (String
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
-        BigActionButton("Save AI Settings", Icons.Default.Save) { onSaveVisionSettings(apiKey, model) }
+        BigActionButton("Save AI Settings", Icons.Default.Save) {
+            if (provider == VisionProvider.OPENAI) onSaveOpenAiVisionSettings(apiKey, model)
+            else onSaveAnthropicVisionSettings(apiKey, model)
+        }
+        if (provider == VisionProvider.OPENAI && settings.anthropicVisionApiKey.isNotBlank() ||
+            provider == VisionProvider.ANTHROPIC && settings.openAiVisionApiKey.isNotBlank()
+        ) {
+            Text(
+                "A key is also saved for the other provider. Switch above to use it instead.",
+                style = MaterialTheme.typography.bodySmall,
+                color = RadarMuted
+            )
+        }
     }
 }
 

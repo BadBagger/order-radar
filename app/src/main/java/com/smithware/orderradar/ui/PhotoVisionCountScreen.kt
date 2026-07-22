@@ -40,6 +40,7 @@ import com.smithware.orderradar.data.Product
 import com.smithware.orderradar.data.VisionCountClient
 import com.smithware.orderradar.data.VisionCountResult
 import com.smithware.orderradar.data.VisionCountSuggestion
+import com.smithware.orderradar.data.VisionProvider
 import com.smithware.orderradar.ui.theme.RadarCard
 import com.smithware.orderradar.ui.theme.RadarCharcoal
 import com.smithware.orderradar.ui.theme.RadarLime
@@ -61,6 +62,7 @@ private data class VisionSuggestionRow(
 @Composable
 fun PhotoVisionCountScreen(
     products: List<Product>,
+    provider: VisionProvider,
     apiKey: String,
     model: String,
     onSaveCounts: (List<VisionCountRow>, String?) -> Unit,
@@ -105,7 +107,8 @@ fun PhotoVisionCountScreen(
             }
         }
         item {
-            WarningPanel("This sends the photo you capture to Anthropic's API for counting. Nothing is saved until you review and confirm each row.")
+            val providerLabel = if (provider == VisionProvider.OPENAI) "OpenAI's" else "Anthropic's"
+            WarningPanel("This sends the photo you capture to $providerLabel API for counting. Nothing is saved until you review and confirm each row.")
         }
         if (apiKey.isBlank()) {
             item {
@@ -170,7 +173,7 @@ fun PhotoVisionCountScreen(
                                     status = "Asking AI to count what's visible..."
                                     scope.launch {
                                         val result = withContext(Dispatchers.IO) {
-                                            VisionCountClient.countShelfPhoto(apiKey, model, file, products.map { it.name })
+                                            VisionCountClient.countShelfPhoto(provider, apiKey, model, file, products.map { it.name })
                                         }
                                         isLoading = false
                                         when (result) {
