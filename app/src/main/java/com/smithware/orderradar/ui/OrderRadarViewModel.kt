@@ -109,8 +109,16 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.addVariance(product, ordered, received, reason)
     }
 
-    fun updateVisionSettings(apiKey: String, model: String) = viewModelScope.launch {
-        settingsStore.updateVisionSettings(apiKey, model)
+    fun setVisionProvider(provider: VisionProvider) = viewModelScope.launch {
+        settingsStore.setVisionProvider(provider)
+    }
+
+    fun updateAnthropicVisionSettings(apiKey: String, model: String) = viewModelScope.launch {
+        settingsStore.updateAnthropicVisionSettings(apiKey, model)
+    }
+
+    fun updateOpenAiVisionSettings(apiKey: String, model: String) = viewModelScope.launch {
+        settingsStore.updateOpenAiVisionSettings(apiKey, model)
     }
 
     fun saveVisionCounts(rows: List<VisionCountRow>, photoPath: String?) = viewModelScope.launch {
