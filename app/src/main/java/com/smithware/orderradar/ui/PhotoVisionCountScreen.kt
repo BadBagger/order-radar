@@ -3,7 +3,9 @@ package com.smithware.orderradar.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
@@ -83,10 +86,55 @@ fun PhotoVisionCountScreen(
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var capturedPath by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf("Take a wide, well-lit photo of the shelf or cooler you want to count.") }
+    var status by remember { mutableStateOf("Take a wide, well-lit photo of the shelf or cooler you want to count, or choose one from your gallery.") }
     var isLoading by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     var rows by remember { mutableStateOf<List<VisionSuggestionRow>>(emptyList()) }
+
+    // Shared by both the camera-capture and gallery paths, so a picked photo gets the exact
+    // same AI-count treatment as a freshly-captured one.
+    fun runVisionCount(file: File) {
+        capturedPath = file.absolutePath
+        if (apiKey.isBlank()) {
+            status = "No API key set. Add rows manually below or set a key in Settings."
+            return
+        }
+        isLoading = true
+        status = "Asking AI to count what's visible..."
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                VisionCountClient.countShelfPhoto(provider, apiKey, model, file, products.map { it.name })
+            }
+            isLoading = false
+            when (result) {
+                is VisionCountResult.Success -> {
+                    rows = result.items.map { suggestion ->
+                        val match = bestProductMatch(suggestion.itemName, products)
+                        VisionSuggestionRow(
+                            suggestion = suggestion,
+                            matchedProductId = match?.id,
+                            quantity = suggestion.estimatedQuantity.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
+                        )
+                    }
+                    status = "AI found ${rows.size} item(s). Confirm product match and quantity for each."
+                }
+                is VisionCountResult.Failure -> {
+                    status = result.message
+                }
+            }
+        }
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val file = createPhotoFile(context.filesDir)
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
+            runVisionCount(file)
+        } catch (e: Exception) {
+            status = "Could not read that photo: ${e.message ?: "unknown error"}"
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
@@ -156,58 +204,41 @@ fun PhotoVisionCountScreen(
         }
         item {
             if (capturedPath == null) {
-                Button(
-                    onClick = {
-                        val file = createPhotoFile(context.filesDir)
-                        imageCapture?.takePicture(
-                            ImageCapture.OutputFileOptions.Builder(file).build(),
-                            mainExecutor,
-                            object : ImageCapture.OnImageSavedCallback {
-                                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                                    capturedPath = file.absolutePath
-                                    if (apiKey.isBlank()) {
-                                        status = "No API key set. Add rows manually below or set a key in Settings."
-                                        return
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            val file = createPhotoFile(context.filesDir)
+                            imageCapture?.takePicture(
+                                ImageCapture.OutputFileOptions.Builder(file).build(),
+                                mainExecutor,
+                                object : ImageCapture.OnImageSavedCallback {
+                                    override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                                        runVisionCount(file)
                                     }
-                                    isLoading = true
-                                    status = "Asking AI to count what's visible..."
-                                    scope.launch {
-                                        val result = withContext(Dispatchers.IO) {
-                                            VisionCountClient.countShelfPhoto(provider, apiKey, model, file, products.map { it.name })
-                                        }
-                                        isLoading = false
-                                        when (result) {
-                                            is VisionCountResult.Success -> {
-                                                rows = result.items.map { suggestion ->
-                                                    val match = bestProductMatch(suggestion.itemName, products)
-                                                    VisionSuggestionRow(
-                                                        suggestion = suggestion,
-                                                        matchedProductId = match?.id,
-                                                        quantity = suggestion.estimatedQuantity.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-                                                    )
-                                                }
-                                                status = "AI found ${rows.size} item(s). Confirm product match and quantity for each."
-                                            }
-                                            is VisionCountResult.Failure -> {
-                                                status = result.message
-                                            }
-                                        }
-                                    }
-                                }
 
-                                override fun onError(exception: ImageCaptureException) {
-                                    status = "Photo capture failed. Try again."
+                                    override fun onError(exception: ImageCaptureException) {
+                                        status = "Photo capture failed. Try again."
+                                    }
                                 }
-                            }
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(Icons.Default.PhotoCamera, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Capture Shelf Photo", fontWeight = FontWeight.Bold)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Capture Shelf Photo", fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Choose from Gallery", fontWeight = FontWeight.Bold)
+                    }
                 }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
