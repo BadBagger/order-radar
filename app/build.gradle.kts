@@ -25,8 +25,8 @@ android {
         applicationId = "com.smithware.orderradar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 14
-        versionName = "0.6.2-grouped-visual-context"
+        versionCode = 15
+        versionName = "0.6.3-fix-product-mismatch"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
