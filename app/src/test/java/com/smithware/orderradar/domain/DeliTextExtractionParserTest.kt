@@ -26,6 +26,45 @@ class DeliTextExtractionParserTest {
     }
 
     @Test
+    fun parsesRealBackstockCaseLabelsFromPhotos() {
+        val text = """
+            0250370 Grandma's Kitchen Apple Vinaigrette Slaw 2 / 5 LB Use By 08/22/26
+            0332094 Soup Chicken Noodle 4 / 4 LB Use By 07/31/26 Brand Blount
+            80017 Blount Fine Foods Lobster Bisque 4 / 4 LB Exp 8/02/2026
+        """.trimIndent()
+
+        val parsed = DeliTextExtractionParser.parseInventoryLabels(text, "case-rack-1", InventoryLocation.COOLER)
+
+        assertEquals(listOf("0250370", "0332094", "80017"), parsed.map { it.sku })
+        assertEquals("Grandma's Kitchen Apple Vinaigrette Slaw", parsed[0].name)
+        assertEquals(10.0, parsed[0].caseWeightLbs ?: 0.0, 0.001)
+        assertEquals(LocalDate.of(2026, 8, 22), parsed[0].useByDate)
+        assertEquals(DeliCategory.SALADS, parsed[0].category)
+        assertEquals(16.0, parsed[1].caseWeightLbs ?: 0.0, 0.001)
+        assertEquals(DeliCategory.SOUPS, parsed[1].category)
+        assertEquals("Blount", parsed[2].brandVendor)
+    }
+
+    @Test
+    fun createsVerifyItemsForLooseSlicerBackstockWithoutVisibleSkus() {
+        val text = """
+            3 blocks yellow cheddar cheese
+            hard salami log
+            provolone cheese loaf
+            shelf marker 29
+        """.trimIndent()
+
+        val parsed = DeliTextExtractionParser.parseLooseBackstockItems(text, "slicer-a", InventoryLocation.SLICER_BACKSTOCK)
+
+        assertEquals(3, parsed.size)
+        assertEquals("UNKNOWN-SLICER-A-1", parsed[0].sku)
+        assertEquals(3.0, parsed[0].casesOnHand, 0.001)
+        assertEquals(DeliCategory.CHEESE, parsed[0].category)
+        assertEquals(DeliCategory.DELI_MEAT, parsed[1].category)
+        assertTrue(parsed.all { !it.verified && it.confidence < 0.80 })
+    }
+
+    @Test
     fun parsesPromoAndOrderScreenTextIntoEngineInputs() {
         val promoText = "SKU 445566 Grab n go pudding BOGO retail 4.99 sale 2.49 50%"
         val orderText = """

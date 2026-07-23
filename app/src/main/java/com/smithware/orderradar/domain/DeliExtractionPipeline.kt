@@ -60,16 +60,8 @@ object DeliTextExtractionParser {
                 val sku = findSku(line) ?: return@mapNotNull null
                 val useBy = findDateAfter(line, "use by", "use-by", "useby", "exp")
                 val packDate = findDateAfter(line, "pack", "packed")
-                val weight = Regex("""(\d+(?:\.\d+)?)\s*(?:lb|lbs|pound)""", RegexOption.IGNORE_CASE)
-                    .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
-                val name = line
-                    .replace(Regex("""sku[:# ]*\w+""", RegexOption.IGNORE_CASE), "")
-                    .replace(Regex("""item[:# ]*\w+""", RegexOption.IGNORE_CASE), "")
-                    .replace(Regex("""\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"""), "")
-                    .replace(Regex("""\d+(?:\.\d+)?\s*(?:lb|lbs|pound)s?""", RegexOption.IGNORE_CASE), "")
-                    .replace(Regex("""\s+"""), " ")
-                    .trim(' ', '-', '|', ',')
-                    .ifBlank { "Unknown item $sku" }
+                val weight = parseCaseWeightLbs(line)
+                val name = line.cleanInventoryName(sku)
                 val confidence = estimateLabelConfidence(line, sku, useBy, weight)
                 DeliInventoryItem(
                     sku = sku,
@@ -83,6 +75,31 @@ object DeliTextExtractionParser {
                     photoRefs = listOf(photoId),
                     verified = confidence >= confidenceThreshold,
                     brandVendor = findVendor(line)
+                )
+            }
+
+    fun parseLooseBackstockItems(text: String, photoId: String, location: InventoryLocation): List<DeliInventoryItem> =
+        text.lines()
+            .map { it.trim() }
+            .filter { line -> line.isNotBlank() && findSku(line) == null && line.looksLikeLooseDeliProduct() }
+            .mapIndexed { index, line ->
+                val count = Regex("""\b(\d+(?:\.\d+)?)\s*(?:x|ct|count|blocks?|logs?|loaves?)\b""", RegexOption.IGNORE_CASE)
+                    .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
+                    ?: 1.0
+                val name = line
+                    .replace(Regex("""\b\d+(?:\.\d+)?\s*(?:x|ct|count|blocks?|logs?|loaves?)\b""", RegexOption.IGNORE_CASE), "")
+                    .replace(Regex("""\s+"""), " ")
+                    .trim(' ', '-', '|', ',')
+                    .ifBlank { "Unknown loose deli item" }
+                DeliInventoryItem(
+                    sku = "UNKNOWN-${photoId.uppercase(Locale.US)}-${index + 1}",
+                    name = name,
+                    category = categorize(name),
+                    casesOnHand = count,
+                    location = location,
+                    confidence = 0.55,
+                    photoRefs = listOf(photoId),
+                    verified = false
                 )
             }
 
@@ -162,9 +179,21 @@ private fun parsePublixOrderReviewLine(line: String, index: Int): SupplierOrderL
 }
 
 private val publixOrderRowRegex = Regex(
-    """^\s*(\d{6,8})\s*[-–]\s*(.+?)\s+((?:\d+(?:\.\d+)?\s*/\s*)?\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|EA|EACH|SC|CT)\b)\s*(.*)$""",
+    """^\s*(\d{6,8})\s*-\s*(.+?)\s+((?:\d+(?:\.\d+)?\s*/\s*)?\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|EA|EACH|SC|CT)\b)\s*(.*)$""",
     RegexOption.IGNORE_CASE
 )
+
+private fun parseCaseWeightLbs(line: String): Double? {
+    val packMatch = Regex("""\b(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*(?:LB|LBS|POUND|POUNDS)\b""", RegexOption.IGNORE_CASE)
+        .find(line)
+    if (packMatch != null) {
+        val packCount = packMatch.groupValues[1].toDoubleOrNull()
+        val packWeight = packMatch.groupValues[2].toDoubleOrNull()
+        if (packCount != null && packWeight != null) return packCount * packWeight
+    }
+    return Regex("""(\d+(?:\.\d+)?)\s*(?:LB|LBS|POUND|POUNDS)\b""", RegexOption.IGNORE_CASE)
+        .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
+}
 
 private fun firstQuantityAfterPack(tail: String): Double =
     Regex("""(?<![\w.])\d+(?:\.\d+)?(?![\w.])""")
@@ -221,11 +250,11 @@ private fun categorize(name: String): DeliCategory {
     val lower = name.lowercase(Locale.US)
     return when {
         "wing" in lower || "tender" in lower -> DeliCategory.WINGS_TENDERS
-        "chicken" in lower -> DeliCategory.RAW_CHICKEN
-        "salad" in lower -> DeliCategory.SALADS
         "soup" in lower -> DeliCategory.SOUPS
+        "salad" in lower || "slaw" in lower -> DeliCategory.SALADS
+        "chicken" in lower -> DeliCategory.RAW_CHICKEN
         "pudding" in lower -> DeliCategory.PUDDING
-        "turkey" in lower || "ham" in lower || "roast beef" in lower -> DeliCategory.DELI_MEAT
+        "turkey" in lower || "ham" in lower || "roast beef" in lower || "salami" in lower -> DeliCategory.DELI_MEAT
         "cheese" in lower -> DeliCategory.CHEESE
         "dip" in lower -> DeliCategory.DIPS
         "bread" in lower || "roll" in lower -> DeliCategory.BREADS
@@ -234,8 +263,14 @@ private fun categorize(name: String): DeliCategory {
 }
 
 private fun findVendor(line: String): String? =
-    Regex("""(?:vendor|brand)[: ]+([A-Za-z0-9 &'-]+)""", RegexOption.IGNORE_CASE)
+    Regex("""(?:vendor|brand)\s*[: ]\s*([A-Za-z0-9 &'-]+)""", RegexOption.IGNORE_CASE)
         .find(line)?.groupValues?.get(1)?.trim()
+        ?: when {
+            line.contains("Blount", ignoreCase = true) -> "Blount"
+            line.contains("Grandma's Kitchen", ignoreCase = true) -> "Grandma's Kitchen"
+            line.contains("Publix", ignoreCase = true) || line.contains("PBX", ignoreCase = true) -> "Publix"
+            else -> null
+        }
 
 private fun duplicateKey(item: DeliInventoryItem): String =
     listOf(item.sku.trim().uppercase(Locale.US), item.useByDate?.toString().orEmpty(), item.location.name).joinToString("|")
@@ -251,3 +286,31 @@ private fun String.cleanOrderDescription(): String =
     replace(Regex("""\s+"""), " ")
         .trim(' ', '-', '|', ',')
         .ifBlank { "Unknown order item" }
+
+private fun String.cleanInventoryName(sku: String): String =
+    replace(Regex("""\b${Regex.escape(sku)}\b""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""(?:sku|item)[:# ]*\w+""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""(?:use\s*-?\s*by|useby|exp|pack|packed)[: ]*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"""), "")
+        .replace(Regex("""\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|EA|EACH|SC|CT|POUND|POUNDS)\b""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""\d+(?:\.\d+)?\s*(?:LB|LBS|POUND|POUNDS)\b""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""\s+"""), " ")
+        .trim(' ', '-', '|', ',')
+        .ifBlank { "Unknown item $sku" }
+
+private fun String.looksLikeLooseDeliProduct(): Boolean {
+    val lower = lowercase(Locale.US)
+    return listOf(
+        "cheddar",
+        "provolone",
+        "muenster",
+        "american",
+        "pepper jack",
+        "salami",
+        "turkey",
+        "ham",
+        "roast beef",
+        "chicken breast",
+        "cheese"
+    ).any { it in lower }
+}
