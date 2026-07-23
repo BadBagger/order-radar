@@ -111,37 +111,37 @@ object DeliTextExtractionParser {
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .mapNotNull { line ->
-                val sku = findSku(line) ?: return@mapNotNull null
-                val useBy = findDateAfter(line, "use by", "use-by", "useby", "exp")
-                val packDate = findDateAfter(line, "pack", "packed")
-                val weight = parseCaseWeightLbs(line)
-                val name = line.cleanInventoryName(sku)
-                val confidence = estimateLabelConfidence(line, sku, useBy, weight)
+                val normalized = line.normalizeOcrLabelText()
+                val sku = findSku(normalized) ?: return@mapNotNull null
+                val useBy = findDateAfter(normalized, "use by", "use-by", "useby", "best by", "sell by", "exp")
+                val packDate = findDateAfter(normalized, "pack", "packed", "pkd")
+                val weight = parseCaseWeightLbs(normalized)
+                val name = normalized.cleanInventoryName(sku)
+                val confidence = estimateLabelConfidence(normalized, sku, useBy, weight)
                 DeliInventoryItem(
                     sku = sku,
                     name = name,
                     category = categorize(name),
-                    casesOnHand = 1.0,
+                    casesOnHand = findExplicitCaseCount(normalized) ?: 1.0,
                     caseWeightLbs = weight,
                     useByDate = useBy,
                     location = location,
                     confidence = confidence,
                     photoRefs = listOf(photoId),
                     verified = confidence >= confidenceThreshold,
-                    brandVendor = findVendor(line)
+                    brandVendor = findVendor(normalized)
                 )
             }
 
     fun parseLooseBackstockItems(text: String, photoId: String, location: InventoryLocation): List<DeliInventoryItem> =
         text.lines()
             .map { it.trim() }
-            .filter { line -> line.isNotBlank() && findSku(line) == null && line.looksLikeLooseDeliProduct() }
+            .map { it.normalizeOcrLabelText() }
+            .filter { line -> line.isNotBlank() && findSku(line) == null && !line.looksLikeShelfNoteOnly() && line.looksLikeLooseDeliProduct() }
             .mapIndexed { index, line ->
-                val count = Regex("""\b(\d+(?:\.\d+)?)\s*(?:x|ct|count|blocks?|logs?|loaves?)\b""", RegexOption.IGNORE_CASE)
-                    .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
-                    ?: 1.0
+                val count = findLooseProductCount(line)
                 val name = line
-                    .replace(Regex("""\b\d+(?:\.\d+)?\s*(?:x|ct|count|blocks?|logs?|loaves?)\b""", RegexOption.IGNORE_CASE), "")
+                    .stripLooseCount()
                     .replace(Regex("""\s+"""), " ")
                     .trim(' ', '-', '|', ',')
                     .ifBlank { "Unknown loose deli item" }
@@ -160,8 +160,17 @@ object DeliTextExtractionParser {
     fun mergeDuplicateCases(items: List<DeliInventoryItem>): List<DeliInventoryItem> =
         items.groupBy { duplicateKey(it) }.values.map { group ->
             val first = group.first()
+            val casesByPhoto = group
+                .flatMap { item -> item.photoRefs.map { it to item.casesOnHand } }
+                .groupBy({ it.first }, { it.second })
+                .mapValues { (_, counts) -> counts.sum() }
+            val caseTotal = if (casesByPhoto.size > 1 && group.flatMap { it.photoRefs }.looksLikeOverlappingPhotoSet()) {
+                casesByPhoto.values.maxOrNull() ?: group.sumOf { it.casesOnHand }
+            } else {
+                group.sumOf { it.casesOnHand }
+            }
             first.copy(
-                casesOnHand = group.sumOf { it.casesOnHand },
+                casesOnHand = caseTotal,
                 confidence = group.minOf { it.confidence },
                 photoRefs = group.flatMap { it.photoRefs }.distinct(),
                 verified = group.all { it.verified }
@@ -194,13 +203,14 @@ object DeliTextExtractionParser {
 
     fun parseOrderScreenLines(text: String): List<SupplierOrderLine> =
         text.lines().mapIndexedNotNull { index, line ->
-            parsePublixOrderReviewLine(line, index)?.let { return@mapIndexedNotNull it }
-            val sku = findSku(line) ?: return@mapIndexedNotNull null
-            val suggested = findLabeledQuantity(line) ?: 0.0
+            val normalized = line.normalizeOcrLabelText()
+            parsePublixOrderReviewLine(normalized, index)?.let { return@mapIndexedNotNull it }
+            val sku = findSku(normalized) ?: return@mapIndexedNotNull null
+            val suggested = findLabeledQuantity(normalized) ?: 0.0
             SupplierOrderLine(
                 sku = sku,
-                name = line.cleanLineName(sku),
-                packSize = Regex("""pack[: ]*([A-Za-z0-9 x./-]+)""", RegexOption.IGNORE_CASE).find(line)?.groupValues?.get(1)?.trim(),
+                name = normalized.cleanLineName(sku),
+                packSize = Regex("""pack[: ]*([A-Za-z0-9 x./-]+)""", RegexOption.IGNORE_CASE).find(normalized)?.groupValues?.get(1)?.trim(),
                 suggestedCases = suggested,
                 forecastDemandCases = suggested,
                 safetyStockCases = 1.0,
@@ -210,8 +220,21 @@ object DeliTextExtractionParser {
 
     fun parseStickyNotes(text: String): List<String> =
         text.lines()
-            .map { it.trim() }
-            .filter { it.contains("add", true) || it.contains("extra", true) || it.contains("note", true) || it.contains("please", true) }
+            .map { it.trim().normalizeOcrLabelText() }
+            .filter { it.isNotBlank() }
+            .fold(emptyList<String>()) { notes, line ->
+                val lower = line.lowercase(Locale.US)
+                val isNoteStarter = noteStarterRegex.containsMatchIn(lower)
+                val hasExtraCount = extraCountRegex.containsMatchIn(lower)
+                when {
+                    isNoteStarter && hasExtraCount -> notes + line
+                    isNoteStarter -> notes + line
+                    hasExtraCount && notes.lastOrNull()?.let { noteStarterRegex.containsMatchIn(it.lowercase(Locale.US)) && !extraCountRegex.containsMatchIn(it.lowercase(Locale.US)) } == true ->
+                        notes.dropLast(1) + "${notes.last()} $line"
+                    hasExtraCount -> notes + line
+                    else -> notes
+                }
+            }
 }
 
 private fun parsePublixOrderReviewLine(line: String, index: Int): SupplierOrderLine? {
@@ -262,9 +285,12 @@ private fun findLabeledQuantity(line: String): Double? =
         ?: Regex("""\bqty\D*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE).find(line)?.groupValues?.get(1)?.toDoubleOrNull()
 
 private fun findSku(line: String): String? =
-    Regex("""(?:sku|item)\s*[:#]?\s*([A-Za-z0-9-]{3,})""", RegexOption.IGNORE_CASE)
-        .find(line)?.groupValues?.get(1)
-        ?: Regex("""\b(\d{4,8})\b""").find(line)?.groupValues?.get(1)
+    Regex("""(?:sku|item|it[e3]m|code)\s*[:#]?\s*([A-Za-z0-9-]{3,})""", RegexOption.IGNORE_CASE)
+        .find(line)?.groupValues?.get(1)?.normalizeSkuCandidate()
+        ?: Regex("""\b([0-9OQDISZB]{4,8})\b""", RegexOption.IGNORE_CASE)
+            .findAll(line)
+            .mapNotNull { it.groupValues[1].normalizeSkuCandidate() }
+            .firstOrNull()
 
 private fun findDateAfter(line: String, vararg labels: String): LocalDate? {
     val lower = line.lowercase(Locale.US)
@@ -304,12 +330,12 @@ private fun categorize(name: String): DeliCategory {
     val lower = name.lowercase(Locale.US)
     return when {
         "wing" in lower || "tender" in lower -> DeliCategory.WINGS_TENDERS
-        "soup" in lower -> DeliCategory.SOUPS
+        "soup" in lower || "bisque" in lower || "chowder" in lower -> DeliCategory.SOUPS
         "salad" in lower || "slaw" in lower -> DeliCategory.SALADS
         "chicken" in lower -> DeliCategory.RAW_CHICKEN
         "pudding" in lower -> DeliCategory.PUDDING
-        "turkey" in lower || "ham" in lower || "roast beef" in lower || "salami" in lower -> DeliCategory.DELI_MEAT
-        "cheese" in lower -> DeliCategory.CHEESE
+        "cheese" in lower || "cheddar" in lower || "swiss" in lower || "provolone" in lower || "muenster" in lower || "american" in lower || "pepper jack" in lower -> DeliCategory.CHEESE
+        "turkey" in lower || "ham" in lower || "roast beef" in lower || "salami" in lower || "bologna" in lower || "pastrami" in lower -> DeliCategory.DELI_MEAT
         "dip" in lower -> DeliCategory.DIPS
         "bread" in lower || "roll" in lower -> DeliCategory.BREADS
         else -> DeliCategory.OTHER
@@ -321,7 +347,7 @@ private fun findVendor(line: String): String? =
         .find(line)?.groupValues?.get(1)?.trim()
         ?: when {
             line.contains("Blount", ignoreCase = true) -> "Blount"
-            line.contains("Grandma's Kitchen", ignoreCase = true) -> "Grandma's Kitchen"
+            Regex("""grandma'?s?\s+kitchen""", RegexOption.IGNORE_CASE).containsMatchIn(line) -> "Grandma's Kitchen"
             line.contains("Publix", ignoreCase = true) || line.contains("PBX", ignoreCase = true) -> "Publix"
             else -> null
         }
@@ -353,12 +379,15 @@ private fun String.cleanOrderDescription(): String =
         .ifBlank { "Unknown order item" }
 
 private fun String.cleanInventoryName(sku: String): String =
-    replace(Regex("""\b${Regex.escape(sku)}\b""", RegexOption.IGNORE_CASE), "")
+    removeOcrSkuTokens(sku)
+        .replace(Regex("""\b${Regex.escape(sku)}\b""", RegexOption.IGNORE_CASE), "")
         .replace(Regex("""(?:sku|item)[:# ]*\w+""", RegexOption.IGNORE_CASE), "")
         .replace(Regex("""(?:use\s*-?\s*by|useby|exp|pack|packed)[: ]*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}""", RegexOption.IGNORE_CASE), "")
         .replace(Regex("""\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"""), "")
         .replace(Regex("""\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|EA|EACH|SC|CT|POUND|POUNDS)\b""", RegexOption.IGNORE_CASE), "")
         .replace(Regex("""\d+(?:\.\d+)?\s*(?:LB|LBS|POUND|POUNDS)\b""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""\b(?:vendor|brand)\s*[: ]\s*[A-Za-z0-9 &'-]+""", RegexOption.IGNORE_CASE), "")
+        .replace(explicitCaseCountRegex, "")
         .replace(Regex("""\s+"""), " ")
         .trim(' ', '-', '|', ',')
         .ifBlank { "Unknown item $sku" }
@@ -367,6 +396,7 @@ private fun String.looksLikeLooseDeliProduct(): Boolean {
     val lower = lowercase(Locale.US)
     return listOf(
         "cheddar",
+        "swiss",
         "provolone",
         "muenster",
         "american",
@@ -375,7 +405,84 @@ private fun String.looksLikeLooseDeliProduct(): Boolean {
         "turkey",
         "ham",
         "roast beef",
+        "bologna",
+        "pastrami",
         "chicken breast",
         "cheese"
     ).any { it in lower }
+}
+
+private val explicitCaseCountRegex = Regex(
+    """(?:\b(?:case|cases|count|cnt|marker|mark)\s*[:#]?\s*(\d+(?:\.\d+)?)\b|\b(\d+(?:\.\d+)?)\s*(?:cases?|cs)\b|\bx\s*(\d+(?:\.\d+)?)\b)""",
+    RegexOption.IGNORE_CASE
+)
+
+private val noteStarterRegex = Regex("""\b(?:please|pls|plz|note|add)\b""", RegexOption.IGNORE_CASE)
+private val extraCountRegex = Regex("""\b(?:add\s*)?(\d+(?:\.\d+)?)\s*(?:extra|xtra|more|addl|additional)\b|\b(?:extra|xtra|more|addl|additional)\s*(\d+(?:\.\d+)?)\b""", RegexOption.IGNORE_CASE)
+
+private fun findExplicitCaseCount(line: String): Double? =
+    explicitCaseCountRegex.find(line)
+        ?.groupValues
+        ?.drop(1)
+        ?.firstOrNull { it.isNotBlank() }
+        ?.toDoubleOrNull()
+
+private fun findLooseProductCount(line: String): Double =
+    Regex("""\b(\d+(?:\.\d+)?)\s*(?:x|ct|count|blocks?|logs?|loaves?|pieces?)\b""", RegexOption.IGNORE_CASE)
+        .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
+        ?: Regex("""^\s*[#x*]?\s*(\d+(?:\.\d+)?)\s+(.+)$""", RegexOption.IGNORE_CASE)
+            .find(line)
+            ?.takeIf { it.groupValues[2].looksLikeLooseDeliProduct() }
+            ?.groupValues?.get(1)?.toDoubleOrNull()
+        ?: Regex("""^(.+?)\s*[#x*]?\s*(\d+(?:\.\d+)?)\s*$""", RegexOption.IGNORE_CASE)
+            .find(line)
+            ?.takeIf { it.groupValues[1].looksLikeLooseDeliProduct() }
+            ?.groupValues?.get(2)?.toDoubleOrNull()
+        ?: 1.0
+
+private fun String.stripLooseCount(): String =
+    replace(Regex("""\b\d+(?:\.\d+)?\s*(?:x|ct|count|blocks?|logs?|loaves?|pieces?)\b""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""^\s*[#x*]?\s*\d+(?:\.\d+)?\s+"""), "")
+        .replace(Regex("""\s*[#x*]?\s*\d+(?:\.\d+)?\s*$"""), "")
+        .replace(Regex("""\s+\b(?:blocks?|logs?|loaves?|pieces?)\b\s*$""", RegexOption.IGNORE_CASE), "")
+
+private fun String.looksLikeShelfNoteOnly(): Boolean {
+    val lower = lowercase(Locale.US)
+    return ("shelf" in lower || "marker" in lower || "note" in lower || "please" in lower || "extra" in lower) && !looksLikeLooseDeliProduct()
+}
+
+private fun String.normalizeSkuCandidate(): String? {
+    val normalized = uppercase(Locale.US)
+        .replace('O', '0')
+        .replace('Q', '0')
+        .replace('D', '0')
+        .replace('I', '1')
+        .replace('S', '5')
+        .replace('Z', '2')
+        .replace('B', '8')
+        .filter { it.isDigit() }
+    return normalized.takeIf { it.length in 4..8 }
+}
+
+private fun String.normalizeOcrLabelText(): String =
+    replace(Regex("""[|]"""), " ")
+        .replace(Regex("""\bPBX\b""", RegexOption.IGNORE_CASE), "PBX")
+        .replace(Regex("""\bPUBLlX\b""", RegexOption.IGNORE_CASE), "Publix")
+        .replace(Regex("""\bBL0UNT\b""", RegexOption.IGNORE_CASE), "Blount")
+        .replace(Regex("""\bGRANDMA[’` ]?S\s+KITCHEN\b""", RegexOption.IGNORE_CASE), "Grandma's Kitchen")
+        .replace(Regex("""\bU5E\s*BY\b""", RegexOption.IGNORE_CASE), "Use By")
+        .replace(Regex("""\bEXP[.:]?\b""", RegexOption.IGNORE_CASE), "Exp ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+
+private fun String.removeOcrSkuTokens(sku: String): String =
+    splitToSequence(' ')
+        .filterNot { token -> token.trim('-', ':', '#').normalizeSkuCandidate() == sku }
+        .joinToString(" ")
+
+private fun List<String>.looksLikeOverlappingPhotoSet(): Boolean {
+    val lower = distinct().map { it.lowercase(Locale.US) }
+    return lower.any { ref ->
+        listOf("angle", "overlap", "nearby", "left", "right", "wide", "page").any { it in ref }
+    }
 }

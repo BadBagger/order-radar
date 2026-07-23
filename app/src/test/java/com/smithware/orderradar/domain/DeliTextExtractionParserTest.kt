@@ -46,6 +46,43 @@ class DeliTextExtractionParserTest {
     }
 
     @Test
+    fun parsesMessyBlountAndGrandmasCaseLabelOcrVariants() {
+        val text = """
+            O33Z094  BL0UNT Fine Foods  Soup Chicken Noodle 4/4 LB U5E BY 7/31/26
+            item O25037O GRANDMA S KITCHEN Apple Vinaigrette Slaw 2 / 5 LB best by 08/22/26
+            code 80O17 Blount lobster bisque 4 / 4 LB EXP. 8/02/2026 mark 2
+        """.trimIndent()
+
+        val parsed = DeliTextExtractionParser.parseInventoryLabels(text, "messy-case-labels", InventoryLocation.COOLER)
+
+        assertEquals(listOf("0332094", "0250370", "80017"), parsed.map { it.sku })
+        assertEquals("Blount Fine Foods Soup Chicken Noodle", parsed[0].name)
+        assertEquals("Grandma's Kitchen", parsed[1].brandVendor)
+        assertEquals(LocalDate.of(2026, 8, 22), parsed[1].useByDate)
+        assertEquals(2.0, parsed[2].casesOnHand, 0.001)
+        assertEquals(DeliCategory.SOUPS, parsed[2].category)
+    }
+
+    @Test
+    fun parsesPublixPbxCheeseAndDeliMeatInventoryLabels() {
+        val text = """
+            0080704 PBX DELI SWISS (2) 18.18 LB Use By 08/03/26 count 3
+            0077712 Publix deli tavern ham 2 / 6 LB Use By 8/04/2026 cases 2
+            item O60123 PBX Deluxe Roast Beef 2/7 LB exp 8/05/26
+        """.trimIndent()
+
+        val parsed = DeliTextExtractionParser.parseInventoryLabels(text, "pbx-slicer-case", InventoryLocation.SLICER_BACKSTOCK)
+
+        assertEquals(listOf("0080704", "0077712", "060123"), parsed.map { it.sku })
+        assertEquals("Publix", parsed[0].brandVendor)
+        assertEquals(DeliCategory.CHEESE, parsed[0].category)
+        assertEquals(3.0, parsed[0].casesOnHand, 0.001)
+        assertEquals(DeliCategory.DELI_MEAT, parsed[1].category)
+        assertEquals(12.0, parsed[1].caseWeightLbs ?: 0.0, 0.001)
+        assertEquals(DeliCategory.DELI_MEAT, parsed[2].category)
+    }
+
+    @Test
     fun createsVerifyItemsForLooseSlicerBackstockWithoutVisibleSkus() {
         val text = """
             3 blocks yellow cheddar cheese
@@ -62,6 +99,23 @@ class DeliTextExtractionParserTest {
         assertEquals(DeliCategory.CHEESE, parsed[0].category)
         assertEquals(DeliCategory.DELI_MEAT, parsed[1].category)
         assertTrue(parsed.all { !it.verified && it.confidence < 0.80 })
+    }
+
+    @Test
+    fun readsHandwrittenMarkerCountsOnLooseCheeseAndMeat() {
+        val text = """
+            #4 yellow american cheese
+            turkey breast 2
+            x3 hard salami logs
+            shelf marker 29
+            please add 8 extra
+        """.trimIndent()
+
+        val parsed = DeliTextExtractionParser.parseLooseBackstockItems(text, "marker-counts", InventoryLocation.SLICER_BACKSTOCK)
+
+        assertEquals(listOf(4.0, 2.0, 3.0), parsed.map { it.casesOnHand })
+        assertEquals(listOf(DeliCategory.CHEESE, DeliCategory.DELI_MEAT, DeliCategory.DELI_MEAT), parsed.map { it.category })
+        assertEquals(listOf("yellow american cheese", "turkey breast", "hard salami"), parsed.map { it.name })
     }
 
     @Test
@@ -125,7 +179,22 @@ class DeliTextExtractionParserTest {
             """.trimIndent()
         )
 
-        assertEquals(listOf("please add", "8 extra"), notes)
+        assertEquals(listOf("please add 8 extra"), notes)
+    }
+
+    @Test
+    fun combinesShelfNoteFragmentsForExtraCaseRequests() {
+        val notes = DeliTextExtractionParser.parseStickyNotes(
+            """
+            cooler shelf note
+            pls add
+            8 xtra
+            PBX SWISS
+            add 2 extra ham
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("cooler shelf note", "pls add 8 xtra", "add 2 extra ham"), notes)
     }
 
     @Test
@@ -212,6 +281,39 @@ class DeliTextExtractionParserTest {
         assertEquals(listOf(0, 1, 2, 3), batch.orderLines.map { it.orderIndex })
         assertEquals(listOf("18.18 LB", "20 LB", "4 / 4 LB", "4 / 12.5 OZ"), batch.orderLines.map { it.packSize })
         assertEquals(listOf(1.0, 4.0, 2.0, 3.0), batch.orderLines.map { it.suggestedCases })
+    }
+
+    @Test
+    fun avoidsDoubleCountingDuplicateStacksAcrossNearbyPhotoAngles() {
+        val batch = DeliExtractionBatchBuilder.build(
+            inputs = listOf(
+                DeliTextExtractionInput(
+                    id = "angle-left",
+                    kind = DeliTextSourceKind.INVENTORY,
+                    location = InventoryLocation.COOLER,
+                    text = """
+                        0332094 Blount Soup Chicken Noodle 4 / 4 LB Use By 07/31/26
+                        0332094 Blount Soup Chicken Noodle 4 / 4 LB Use By 07/31/26
+                    """.trimIndent()
+                ),
+                DeliTextExtractionInput(
+                    id = "angle-right",
+                    kind = DeliTextSourceKind.INVENTORY,
+                    location = InventoryLocation.COOLER,
+                    text = """
+                        0332094 BL0UNT Soup Chicken Noodle 4 / 4 LB U5E BY 07/31/26
+                        O332094 Blount Soup Chicken Noodle 4 / 4 LB Use By 07/31/26
+                    """.trimIndent()
+                )
+            ),
+            defaultAdStart = LocalDate.of(2026, 7, 27),
+            defaultAdEnd = LocalDate.of(2026, 8, 2)
+        )
+
+        val soup = batch.inventoryItems.single()
+        assertEquals("0332094", soup.sku)
+        assertEquals(2.0, soup.casesOnHand, 0.001)
+        assertEquals(listOf("angle-left", "angle-right"), soup.photoRefs)
     }
 }
 
