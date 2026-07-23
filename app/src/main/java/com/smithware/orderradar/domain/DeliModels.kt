@@ -82,6 +82,15 @@ data class SupplierOrderLine(
     val orderIndex: Int
 )
 
+data class SupplierOrderLineEdit(
+    val sku: String? = null,
+    val name: String? = null,
+    val packSize: String? = null,
+    val suggestedCases: Double? = null,
+    val forecastDemandCases: Double? = null,
+    val safetyStockCases: Double? = null
+)
+
 data class DeliReconciliationRequest(
     val inventory: List<DeliInventoryItem>,
     val promos: List<PromoItem>,

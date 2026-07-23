@@ -468,8 +468,9 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
     var sessionStatus by remember { mutableStateOf(DeliExtractionStatus.QUEUED) }
     var activeSession by remember { mutableStateOf<DeliScanSession?>(null) }
     var reviewedInventory by remember { mutableStateOf<List<DeliInventoryItem>>(emptyList()) }
+    var reviewedOrderLines by remember { mutableStateOf<List<SupplierOrderLine>>(emptyList()) }
     val batch = activeSession?.result
-    val result = remember(batch, reviewedInventory, today) {
+    val result = remember(batch, reviewedInventory, reviewedOrderLines, today) {
         if (batch == null) {
             sampleDeliReconciliation(today)
         } else {
@@ -480,7 +481,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                     coverageWindowDays = 7,
                     inventory = reviewedInventory,
                     promos = batch.promoItems,
-                    orderLines = batch.orderLines
+                    orderLines = reviewedOrderLines
                 )
             )
         }
@@ -500,6 +501,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                 queuedSources = emptyList()
                 activeSession = null
                 reviewedInventory = emptyList()
+                reviewedOrderLines = emptyList()
                 sessionStatus = DeliExtractionStatus.QUEUED
                 sourceCounter = 1
             }
@@ -547,6 +549,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                             sourceCounter += 1
                             activeSession = null
                             reviewedInventory = emptyList()
+                            reviewedOrderLines = emptyList()
                             sessionStatus = DeliExtractionStatus.QUEUED
                         }
                     },
@@ -571,6 +574,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                         )
                         activeSession = session
                         reviewedInventory = session.result?.inventoryItems.orEmpty()
+                        reviewedOrderLines = session.result?.orderLines.orEmpty()
                         onSaveSession(session)
                         sessionStatus = if ((session.summary?.verifyItemCount ?: 0) > 0) {
                             DeliExtractionStatus.NEEDS_VERIFICATION
@@ -627,6 +631,18 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                     }
                 }
             )
+            SectionHeader("Review Supplier Order Screen")
+            DeliOrderScreenReviewSection(
+                orderLines = reviewedOrderLines,
+                onUpdate = { index, line ->
+                    reviewedOrderLines = reviewedOrderLines.mapIndexed { itemIndex, current ->
+                        if (itemIndex == index) line.copy(orderIndex = itemIndex) else current
+                    }
+                },
+                onMove = { from, to ->
+                    reviewedOrderLines = DeliOrderScreenReviewEngine.moveLine(reviewedOrderLines, from, to)
+                }
+            )
         }
         SectionHeader("Order Sheet")
         result.orderSheet.forEach { rec ->
@@ -669,6 +685,132 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DeliOrderScreenReviewSection(
+    orderLines: List<SupplierOrderLine>,
+    onUpdate: (Int, SupplierOrderLine) -> Unit,
+    onMove: (Int, Int) -> Unit
+) {
+    if (orderLines.isEmpty()) {
+        EmptyState("No supplier order rows", "Queue order-screen text from one or more photographed pages, then build the parsed batch.")
+        return
+    }
+    SimpleCard {
+        Text("Imported rows stay in page order. Correct SKU, description, pack, and suggested cases before reconciliation.", color = RadarMuted)
+    }
+    orderLines.sortedBy { it.orderIndex }.forEachIndexed { index, line ->
+        DeliOrderScreenReviewRow(
+            index = index,
+            line = line,
+            canMoveUp = index > 0,
+            canMoveDown = index < orderLines.lastIndex,
+            onUpdate = onUpdate,
+            onMove = onMove
+        )
+    }
+}
+
+@Composable
+private fun DeliOrderScreenReviewRow(
+    index: Int,
+    line: SupplierOrderLine,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onUpdate: (Int, SupplierOrderLine) -> Unit,
+    onMove: (Int, Int) -> Unit
+) {
+    var suggestedText by remember(line.orderIndex, line.sku, line.suggestedCases) { mutableStateOf(line.suggestedCases.clean()) }
+    var forecastText by remember(line.orderIndex, line.sku, line.forecastDemandCases) { mutableStateOf(line.forecastDemandCases.clean()) }
+    var safetyText by remember(line.orderIndex, line.sku, line.safetyStockCases) { mutableStateOf(line.safetyStockCases.clean()) }
+    SimpleCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Surface(color = RadarPanel, shape = RoundedCornerShape(6.dp)) {
+                Text("#${index + 1}", color = RadarText, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(line.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${line.sku} | ${line.packSize ?: "pack unread"} | suggested ${line.suggestedCases.clean()} cases", color = RadarMuted)
+            }
+            FilledTonalIconButton(onClick = { onMove(index, index - 1) }, enabled = canMoveUp) {
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up")
+            }
+            FilledTonalIconButton(onClick = { onMove(index, index + 1) }, enabled = canMoveDown) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move down")
+            }
+        }
+        OutlinedTextField(
+            value = line.sku,
+            onValueChange = { value ->
+                onUpdate(index, DeliOrderScreenReviewEngine.applyEdit(line, SupplierOrderLineEdit(sku = value)))
+            },
+            label = { Text("SKU") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = line.name,
+            onValueChange = { value ->
+                onUpdate(index, DeliOrderScreenReviewEngine.applyEdit(line, SupplierOrderLineEdit(name = value)))
+            },
+            label = { Text("Description") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = line.packSize.orEmpty(),
+            onValueChange = { value ->
+                onUpdate(index, DeliOrderScreenReviewEngine.applyEdit(line, SupplierOrderLineEdit(packSize = value)))
+            },
+            label = { Text("Pack") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = suggestedText,
+                onValueChange = { value ->
+                    suggestedText = value
+                    value.toDoubleOrNull()?.let { parsed ->
+                        val edited = DeliOrderScreenReviewEngine.applyEdit(line, SupplierOrderLineEdit(suggestedCases = parsed))
+                        forecastText = edited.forecastDemandCases.clean()
+                        onUpdate(index, edited)
+                    }
+                },
+                label = { Text("Suggested cases") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = forecastText,
+                onValueChange = { value ->
+                    forecastText = value
+                    value.toDoubleOrNull()?.let { parsed ->
+                        onUpdate(index, DeliOrderScreenReviewEngine.applyEdit(line, SupplierOrderLineEdit(forecastDemandCases = parsed)))
+                    }
+                },
+                label = { Text("Forecast") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(1f)
+            )
+        }
+        OutlinedTextField(
+            value = safetyText,
+            onValueChange = { value ->
+                safetyText = value
+                value.toDoubleOrNull()?.let { parsed ->
+                    onUpdate(index, DeliOrderScreenReviewEngine.applyEdit(line, SupplierOrderLineEdit(safetyStockCases = parsed)))
+                }
+            },
+            label = { Text("Safety stock cases") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 

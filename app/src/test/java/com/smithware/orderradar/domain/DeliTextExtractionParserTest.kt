@@ -182,5 +182,36 @@ class DeliTextExtractionParserTest {
         assertEquals(1, batch.verifyLabels.size)
         assertEquals(null, batch.verifyLabels.single().sku)
     }
+
+    @Test
+    fun preservesSupplierOrderRowsAcrossMultiplePhotographedPages() {
+        val batch = DeliExtractionBatchBuilder.build(
+            inputs = listOf(
+                DeliTextExtractionInput(
+                    id = "order-page-1",
+                    kind = DeliTextSourceKind.ORDER_SCREEN,
+                    text = """
+                        0080704 - PBX DELI SWISS (2) 18.18 LB 1 0 WK
+                        0075034 - FRYER CHICKEN TENDERLOIN 20 LB 4 6 6 WK
+                    """.trimIndent()
+                ),
+                DeliTextExtractionInput(
+                    id = "order-page-2",
+                    kind = DeliTextSourceKind.ORDER_SCREEN,
+                    text = """
+                        0332094 - SOUP CHICKEN NOODLE 4 / 4 LB 2 0 WK
+                        0927214 - ASIAGO SUN TOM SALAD KIT 4 / 12.5 OZ 3 0 WK
+                    """.trimIndent()
+                )
+            ),
+            defaultAdStart = LocalDate.of(2026, 7, 27),
+            defaultAdEnd = LocalDate.of(2026, 8, 2)
+        )
+
+        assertEquals(listOf("0080704", "0075034", "0332094", "0927214"), batch.orderLines.map { it.sku })
+        assertEquals(listOf(0, 1, 2, 3), batch.orderLines.map { it.orderIndex })
+        assertEquals(listOf("18.18 LB", "20 LB", "4 / 4 LB", "4 / 12.5 OZ"), batch.orderLines.map { it.packSize })
+        assertEquals(listOf(1.0, 4.0, 2.0, 3.0), batch.orderLines.map { it.suggestedCases })
+    }
 }
 

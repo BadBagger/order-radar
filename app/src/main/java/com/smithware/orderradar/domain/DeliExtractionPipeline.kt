@@ -233,7 +233,7 @@ private fun parsePublixOrderReviewLine(line: String, index: Int): SupplierOrderL
 }
 
 private val publixOrderRowRegex = Regex(
-    """^\s*(\d{6,8})\s*-\s*(.+?)\s+((?:\d+(?:\.\d+)?\s*/\s*)?\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|EA|EACH|SC|CT)\b)\s*(.*)$""",
+    """^\s*(\d{4,8})\s*(?:-|:|\s)\s*(.+?)\s+((?:\d+(?:\.\d+)?\s*/\s*)?\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|EA|EACH|SC|CT|PK|PACK|CASE)\b)\s*(.*)$""",
     RegexOption.IGNORE_CASE
 )
 
