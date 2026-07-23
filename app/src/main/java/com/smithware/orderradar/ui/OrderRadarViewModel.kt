@@ -14,7 +14,8 @@ import kotlinx.coroutines.launch
 
 data class VisionCountRow(
     val suggestion: VisionCountSuggestion,
-    val matchedProduct: Product?
+    val matchedProduct: Product?,
+    val confirmedQuantity: Double
 )
 
 data class OrderRadarUiState(
@@ -28,7 +29,8 @@ data class OrderRadarUiState(
     val variances: List<VarianceLog> = emptyList(),
     val displays: List<DisplayPlan> = emptyList(),
     val recipes: List<Recipe> = emptyList(),
-    val recipeIngredients: List<RecipeIngredient> = emptyList()
+    val recipeIngredients: List<RecipeIngredient> = emptyList(),
+    val visionCorrections: List<VisionCorrection> = emptyList()
 )
 
 class OrderRadarViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,7 +50,8 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.variances,
         repo.displays,
         repo.recipes,
-        repo.recipeIngredients
+        repo.recipeIngredients,
+        repo.visionCorrections
     ) { values ->
         val snapshots = values[0] as List<ProductSnapshot>
         val forecasts = snapshots.map { ForecastEngine.forecast(it, repo.nextTruckDays(it.truck)) }
@@ -63,7 +66,8 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
             variances = values[6] as List<VarianceLog>,
             displays = values[7] as List<DisplayPlan>,
             recipes = values[8] as List<Recipe>,
-            recipeIngredients = values[9] as List<RecipeIngredient>
+            recipeIngredients = values[9] as List<RecipeIngredient>,
+            visionCorrections = values[10] as List<VisionCorrection>
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), OrderRadarUiState())
 
@@ -123,7 +127,7 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
 
     fun saveVisionCounts(rows: List<VisionCountRow>, photoPath: String?) = viewModelScope.launch {
         rows.forEach { row ->
-            val note = "AI shelf photo count (${row.suggestion.confidence} confidence). ${row.suggestion.notes}".trim()
+            val note = "AI shelf photo count (${row.suggestion.confidencePercent}% confidence). ${row.suggestion.notes}".trim()
             val product = row.matchedProduct ?: run {
                 val newProduct = Product(
                     name = row.suggestion.itemName,
@@ -135,7 +139,18 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 newProduct.copy(id = repo.saveProduct(newProduct))
             }
-            repo.addCountWithPhoto(product, row.suggestion.estimatedQuantity, note, photoPath)
+            repo.addCountWithPhoto(product, row.confirmedQuantity, note, photoPath)
+            // Every confirmed row -- corrected or left as-is -- feeds VisionLearningEngine so
+            // future estimates for this product get better, whether or not the user changed anything.
+            repo.addVisionCorrection(
+                VisionCorrection(
+                    productId = product.id,
+                    productName = product.name,
+                    aiEstimatedQuantity = row.suggestion.estimatedQuantity,
+                    confirmedQuantity = row.confirmedQuantity,
+                    aiConfidencePercent = row.suggestion.confidencePercent
+                )
+            )
         }
     }
 }

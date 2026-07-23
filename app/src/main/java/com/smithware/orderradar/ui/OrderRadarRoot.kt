@@ -74,10 +74,11 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
             val editProduct = editProductId?.let { id -> state.product(id) }
             when {
                 showVisionCount -> PhotoVisionCountScreen(
-                    products = state.snapshots.map { it.product },
+                    snapshots = state.snapshots,
                     provider = settings.visionProvider,
                     apiKey = settings.activeVisionApiKey,
                     model = settings.activeVisionModel,
+                    corrections = state.visionCorrections,
                     onSaveCounts = { rows, photoPath -> vm.saveVisionCounts(rows, photoPath) },
                     onOpenSettings = { showVisionCount = false; tab = Tab.Reports },
                     onBack = { showVisionCount = false }

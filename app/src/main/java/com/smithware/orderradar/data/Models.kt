@@ -187,6 +187,20 @@ data class ProductionLog(@PrimaryKey(autoGenerate = true) val id: Long = 0, val 
 @Entity
 data class PhotoAttachment(@PrimaryKey(autoGenerate = true) val id: Long = 0, val relatedType: String, val relatedId: Long, val photoUri: String, val caption: String? = null, val createdAt: Long = System.currentTimeMillis())
 
+// One row per confirmed AI shelf-count row: what the AI guessed vs. what the user actually
+// confirmed. This is the training signal for VisionLearningEngine -- every save teaches it,
+// whether the user corrected the count or left it exactly as guessed.
+@Entity
+data class VisionCorrection(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val productId: Long,
+    val productName: String,
+    val aiEstimatedQuantity: Double,
+    val confirmedQuantity: Double,
+    val aiConfidencePercent: Int,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 data class ProductSnapshot(
     val product: Product,
     val latestCount: InventoryCount?,
