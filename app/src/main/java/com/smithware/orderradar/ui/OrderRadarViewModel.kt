@@ -153,7 +153,7 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
 
     fun saveVisionCounts(rows: List<VisionCountRow>, photoPath: String?) = viewModelScope.launch {
         rows.forEach { row ->
-            val note = "AI shelf photo count (${row.suggestion.confidencePercent}% confidence). ${row.suggestion.notes}".trim()
+            val note = "AI shelf photo count (${row.suggestion.identificationConfidencePercent}% ID, ${row.suggestion.countConfidencePercent}% count confidence). ${row.suggestion.notes}".trim()
             val product = row.matchedProduct ?: run {
                 val newProduct = Product(
                     name = row.suggestion.itemName,
@@ -174,7 +174,7 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
                     productName = product.name,
                     aiEstimatedQuantity = row.suggestion.estimatedQuantity,
                     confirmedQuantity = row.confirmedQuantity,
-                    aiConfidencePercent = row.suggestion.confidencePercent
+                    aiConfidencePercent = row.suggestion.countConfidencePercent
                 )
             )
         }

@@ -71,7 +71,8 @@ import java.io.File
 private data class VisionSuggestionRow(
     val suggestion: VisionCountSuggestion,
     val matchedProductId: Long?,
-    val displayConfidencePercent: Int,
+    val displayIdentificationConfidencePercent: Int,
+    val displayCountConfidencePercent: Int,
     val quantity: String,
     val checked: Boolean = true
 )
@@ -147,13 +148,16 @@ fun PhotoVisionCountScreen(
                     rows = result.items.map { suggestion ->
                         val match = bestProductMatch(suggestion.itemName, products)
                         val bias = match?.let { VisionLearningEngine.biasFor(corrections, it.id) } ?: VisionBias(1.0, 1.0, 0)
-                        val (adjustedQuantity, adjustedConfidence) = VisionLearningEngine.applyBias(
-                            suggestion.estimatedQuantity, suggestion.confidencePercent, bias
+                        // Bias only ever adjusts the count side -- corrections measure quantity
+                        // accuracy, not whether the AI named the right product.
+                        val (adjustedQuantity, adjustedCountConfidence) = VisionLearningEngine.applyBias(
+                            suggestion.estimatedQuantity, suggestion.countConfidencePercent, bias
                         )
                         VisionSuggestionRow(
                             suggestion = suggestion,
                             matchedProductId = match?.id,
-                            displayConfidencePercent = adjustedConfidence,
+                            displayIdentificationConfidencePercent = suggestion.identificationConfidencePercent,
+                            displayCountConfidencePercent = adjustedCountConfidence,
                             quantity = adjustedQuantity.clean()
                         )
                     }
@@ -361,11 +365,12 @@ fun PhotoVisionCountScreen(
 private fun VisionRow(products: List<Product>, row: VisionSuggestionRow, onChange: (VisionSuggestionRow) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     val matched = row.matchedProductId?.let { id -> products.firstOrNull { it.id == id } }
-    val confidenceColor = when {
-        row.displayConfidencePercent >= 80 -> RadarLime
-        row.displayConfidencePercent >= 50 -> Color(0xFFE0A526)
+    fun colorFor(percent: Int) = when {
+        percent >= 80 -> RadarLime
+        percent >= 50 -> Color(0xFFE0A526)
         else -> RadarOrange
     }
+    val lowestConfidence = minOf(row.displayIdentificationConfidencePercent, row.displayCountConfidencePercent)
     AssistCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = row.checked, onCheckedChange = { onChange(row.copy(checked = it)) })
@@ -377,15 +382,9 @@ private fun VisionRow(products: List<Product>, row: VisionSuggestionRow, onChang
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.weight(1f)
                     )
-                    Surface(color = confidenceColor.copy(alpha = 0.18f), shape = RoundedCornerShape(6.dp)) {
-                        Text(
-                            "${row.displayConfidencePercent}%",
-                            color = confidenceColor,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
+                    ConfidenceBadge("ID", row.displayIdentificationConfidencePercent, colorFor(row.displayIdentificationConfidencePercent))
+                    Spacer(Modifier.width(4.dp))
+                    ConfidenceBadge("Count", row.displayCountConfidencePercent, colorFor(row.displayCountConfidencePercent))
                 }
                 Box {
                     OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
@@ -417,7 +416,7 @@ private fun VisionRow(products: List<Product>, row: VisionSuggestionRow, onChang
                         onChange(row.copy(quantity = (current + 1.0).clean()))
                     }) { Icon(Icons.Default.Add, contentDescription = "Increase count") }
                 }
-                if (row.displayConfidencePercent < 80) {
+                if (lowestConfidence < 80) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         AssistChip(onClick = { onChange(row.copy(quantity = "0")) }, label = { Text("Not here") })
                         AssistChip(onClick = { onChange(row.copy(checked = true)) }, label = { Text("Looks right") })
@@ -428,6 +427,19 @@ private fun VisionRow(products: List<Product>, row: VisionSuggestionRow, onChang
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ConfidenceBadge(label: String, percent: Int, color: Color) {
+    Surface(color = color.copy(alpha = 0.18f), shape = RoundedCornerShape(6.dp)) {
+        Text(
+            "$label $percent%",
+            color = color,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
     }
 }
 

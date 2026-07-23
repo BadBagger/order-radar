@@ -40,6 +40,9 @@ object VisionLearningEngine {
         return VisionBias(ratio = avgRatio, confidenceMultiplier = confidenceMultiplier, sampleCount = recent.size)
     }
 
+    // Corrections only ever measure quantity accuracy (confirmedQuantity vs aiEstimatedQuantity),
+    // so this should be applied to countConfidence, not identificationConfidence -- there's no
+    // signal here about whether the AI named the right product.
     fun applyBias(rawQuantity: Double, rawConfidencePercent: Int, bias: VisionBias): Pair<Double, Int> {
         if (bias.sampleCount == 0) return rawQuantity to rawConfidencePercent
         val adjustedQuantity = rawQuantity * bias.ratio

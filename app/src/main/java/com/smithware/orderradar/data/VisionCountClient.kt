@@ -13,15 +13,15 @@ data class VisionCountSuggestion(
     val itemName: String,
     val estimatedQuantity: Double,
     val unit: String,
-    val confidencePercent: Int,
+    // Two independent scores: how sure the AI is this is genuinely the named product (based on
+    // cross-checking shape, color, OCR text, and shelf position), versus how sure it is of the
+    // NUMBER specifically (based on photo quality/occlusion). A shaky count on a correctly
+    // identified item, or a solid count on a shaky guess at what the item even is, are both
+    // real and different kinds of uncertainty -- one score can't represent both.
+    val identificationConfidencePercent: Int,
+    val countConfidencePercent: Int,
     val notes: String
-) {
-    val confidenceLabel: String get() = when {
-        confidencePercent >= 80 -> "high"
-        confidencePercent >= 50 -> "medium"
-        else -> "low"
-    }
-}
+)
 
 // Recent count/usage history for one known product, folded into the vision prompt so the AI
 // can sanity-check a raw photo estimate against what this product's supply actually looks like
@@ -121,11 +121,17 @@ object VisionCountClient {
 
         return """
             You are helping a deli/grocery manager count physical inventory from a shelf or cooler photo.
-            Real shelf photos are often imperfect: blurry, tilted, cropped, partially blocked by other items, or dim. Do not skip an item just because it isn't perfectly legible -- use packaging shape, color, stacking pattern, partial text, and the context below to make your best estimate, and reflect any uncertainty in the confidence score instead of leaving the item out.
+            Real shelf photos are often imperfect: blurry, tilted, cropped, partially blocked by other items, or dim. Do not skip an item just because it isn't perfectly legible -- use packaging shape, color, stacking pattern, partial text, and the context below to make your best estimate, and reflect any uncertainty in the confidence scores instead of leaving the item out.
             List every distinct food product you can see and estimate how many discrete units (boxes, chubs, tubs, packages, or trays) of each are visible. Do not estimate by weight.
 
-            Counting method: for products stored as identical stacked boxes/cases, you do not need to read the printed label on every box. Count distinct stacked units by their visible edges, seams, or shadow lines between boxes of the same size and color -- if you can see a stack of 4 same-size boxes at a known product's usual spot, that is a count of 4 even if only the top box's text is legible. Products are usually restocked in a consistent spot and order, so a box's position on the shelf (matched against "usually found at" below) is itself evidence of which product it is.
-            Some products are distinguished by a color-coding system on the lid or wrap rather than by printed text -- see each product's "visual ID" hint below and match by color first when one is given, since color is often more reliable than text on a blurry photo.
+            Identification method -- do this deliberately, not as a guess: before naming an item, cross-check as many of these signals as are available and let them corroborate or contradict each other:
+            1. Box/case shape and size (e.g. narrow boxes with front handles vs. boxes with a band around the top and no handle are different product families).
+            2. The color-coding "visual ID" hint for each known product below, if one exists -- match by color first, since color reads more reliably than small print on a blurry photo.
+            3. Any OCR text below that matches a product name or code, even partially.
+            4. Shelf position -- products are usually restocked to a consistent spot, so a box's location matched against "usually found at" below is itself evidence of which product it is.
+            The more of these signals agree, the higher identificationConfidence should be. If you're naming something off one weak signal alone (e.g. only a vague box shape, nothing else corroborating), keep identificationConfidence low even if you're sure about the count.
+
+            Counting method: for products stored as identical stacked boxes/cases, you do not need to read the printed label on every box. Count distinct stacked units by their visible edges, seams, or shadow lines between boxes of the same size and color -- if you can see a stack of 4 same-size boxes, that is a count of 4 even if only the top box's text is legible. countConfidence is about the NUMBER specifically -- how cleanly you could see and count the stack given photo quality and occlusion -- and is independent of identificationConfidence: you can be very sure something is Original Rotisserie Chicken but unsure if there are 3 or 4 boxes, or sure there are 4 boxes of something but unsure which flavor.
 
             Known products already tracked in this app: $knownList.
             If an item genuinely IS one of the known products under a slightly different label (e.g. "Caesar Pasta Salad" for a tub printed "Caesar Pasta Salad Base" -- same product, just a shorter name), reuse that exact known product name. But accuracy comes first: do not force-fit to a known name just because it shares one word or a general category (e.g. do not call a whole rotisserie chicken "Chicken Breast Box" just because both involve chicken -- those are different products). If none of the known products are actually what you're looking at, invent a new, specific, accurate name instead -- a new product is far better than a mislabeled one.
@@ -136,8 +142,8 @@ object VisionCountClient {
             $ocrBlock
 
             Respond with ONLY a JSON object, no markdown fences, no commentary, in this exact shape:
-            {"items":[{"name":"string","quantity":number,"unit":"string","confidence":number,"notes":"string"}]}
-            "confidence" must be an integer from 0 to 100 reflecting how sure you are of that specific count, given photo quality and how well it matches the history above. Use "unit" values like "boxes", "cases", "each", "tubs", or "trays" based on how the product is packaged. Keep "notes" under 15 words explaining what you counted or any uncertainty (e.g. partially hidden items, a blurry region, or that you cross-checked against history).
+            {"items":[{"name":"string","quantity":number,"unit":"string","identificationConfidence":number,"countConfidence":number,"notes":"string"}]}
+            Both confidence fields must be integers from 0 to 100, scored independently per the method above. Use "unit" values like "boxes", "cases", "each", "tubs", or "trays" based on how the product is packaged. Keep "notes" under 15 words explaining what you counted or any uncertainty (e.g. partially hidden items, a blurry region, an identification based on color alone, or that you cross-checked against history).
         """.trimIndent()
     }
 
@@ -295,7 +301,10 @@ object VisionCountClient {
                 itemName = name,
                 estimatedQuantity = item.optDouble("quantity", 1.0).let { if (it.isNaN()) 1.0 else it },
                 unit = item.optString("unit").ifBlank { "each" },
-                confidencePercent = parseConfidence(item.opt("confidence")),
+                // Falls back to the old single "confidence" field if a model ignores the new
+                // split schema, so a stale response shape still parses instead of dropping the item.
+                identificationConfidencePercent = if (item.has("identificationConfidence")) parseConfidence(item.opt("identificationConfidence")) else parseConfidence(item.opt("confidence")),
+                countConfidencePercent = if (item.has("countConfidence")) parseConfidence(item.opt("countConfidence")) else parseConfidence(item.opt("confidence")),
                 notes = item.optString("notes")
             )
         }
