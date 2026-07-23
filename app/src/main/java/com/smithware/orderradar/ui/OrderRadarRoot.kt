@@ -133,7 +133,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onAddForecast = vm::addForecastToDraft,
                     onUpdateDelivery = vm::updateDeliveryActual
                 )
-                tab == Tab.Deli -> DeliWorkflowScreen()
+                tab == Tab.Deli -> DeliWorkflowScreen(onSaveSession = vm::saveDeliScanSession)
                 tab == Tab.Displays -> DisplaysScreen(state)
                 tab == Tab.Reports -> ReportsScreen(
                     state,
@@ -458,7 +458,7 @@ private fun ReportsScreen(
 }
 
 @Composable
-private fun DeliWorkflowScreen() {
+private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
     val today = LocalDate.now()
     var sourceKind by remember { mutableStateOf(DeliTextSourceKind.INVENTORY) }
     var location by remember { mutableStateOf(InventoryLocation.COOLER) }
@@ -567,6 +567,7 @@ private fun DeliWorkflowScreen() {
                             nowMillis = System.currentTimeMillis()
                         )
                         activeSession = session
+                        onSaveSession(session)
                         sessionStatus = if ((session.summary?.verifyItemCount ?: 0) > 0) {
                             DeliExtractionStatus.NEEDS_VERIFICATION
                         } else {

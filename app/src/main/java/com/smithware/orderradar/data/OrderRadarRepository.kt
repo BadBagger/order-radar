@@ -2,6 +2,7 @@ package com.smithware.orderradar.data
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import com.smithware.orderradar.domain.DeliScanSession
 import java.util.Calendar
 import kotlin.math.max
 
@@ -20,6 +21,7 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
     val recipeIngredients = dao.recipeIngredients()
     val productTruckLinks = dao.productTruckLinks()
     val visionCorrections = dao.visionCorrections()
+    val deliScanSessions = dao.deliScanSessions()
 
     val snapshots: Flow<List<ProductSnapshot>> = combine(products, counts, movements, trucks, productTruckLinks) { products, counts, movements, trucks, links ->
         products.map { product ->
@@ -76,6 +78,18 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
     )
     suspend fun addMovement(product: Product, quantity: Double, type: MovementType, note: String) = dao.insertMovement(MovementEntry(productId = product.id, quantity = quantity, unit = product.defaultUnit, movementType = type, notes = note))
     suspend fun addVisionCorrection(correction: VisionCorrection) = dao.insertVisionCorrection(correction)
+    suspend fun saveDeliScanSession(session: DeliScanSession): Long =
+        dao.replaceDeliScanSession(DeliScanSessionPersistenceMapper.toEntityBundle(session))
+
+    suspend fun loadDeliScanSession(sessionId: String): DeliScanSession? =
+        dao.loadDeliScanSessionBundle(sessionId)?.let(DeliScanSessionPersistenceMapper::fromEntityBundle)
+
+    suspend fun latestDeliInventorySnapshotForWeek(weekStartEpochDay: Long): DeliInventorySnapshotRecord? =
+        dao.latestDeliInventorySnapshotForWeek(weekStartEpochDay)
+
+    suspend fun deliInventoryItemsForSnapshot(snapshotId: Long): List<DeliInventorySnapshotItemRecord> =
+        dao.deliInventoryItemsForSnapshot(snapshotId)
+
     suspend fun saveProduct(product: Product): Long = dao.upsertProduct(product.copy(updatedAt = System.currentTimeMillis()))
     suspend fun deleteProduct(product: Product) = dao.deleteProduct(product.id)
     suspend fun createOrderFromPhoto(

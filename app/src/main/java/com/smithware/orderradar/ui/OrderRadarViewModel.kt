@@ -139,6 +139,10 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.addVariance(product, ordered, received, reason)
     }
 
+    fun saveDeliScanSession(session: DeliScanSession) = viewModelScope.launch {
+        repo.saveDeliScanSession(session)
+    }
+
     fun setVisionProvider(provider: VisionProvider) = viewModelScope.launch {
         settingsStore.setVisionProvider(provider)
     }

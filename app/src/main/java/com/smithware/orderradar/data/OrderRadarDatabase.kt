@@ -13,9 +13,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Product::class, TruckSchedule::class, ProductTruckLink::class, InventoryCount::class,
         MovementEntry::class, OrderDraft::class, OrderLine::class, DeliveryRecord::class,
         DeliveryLine::class, VarianceLog::class, DisplayPlan::class, Recipe::class,
-        RecipeIngredient::class, ProductionLog::class, PhotoAttachment::class, VisionCorrection::class
+        RecipeIngredient::class, ProductionLog::class, PhotoAttachment::class, VisionCorrection::class,
+        DeliScanSessionRecord::class, DeliScanSourceRecord::class, DeliInventorySnapshotRecord::class,
+        DeliInventorySnapshotItemRecord::class, DeliPromoItemRecord::class,
+        DeliSupplierOrderLineRecord::class, DeliVerifyLabelRecord::class, DeliStickyNoteRecord::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -122,10 +125,164 @@ abstract class OrderRadarDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliScanSessionRecord` (
+                        `sessionId` TEXT NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL,
+                        `updatedAtMillis` INTEGER NOT NULL,
+                        `progressState` TEXT NOT NULL,
+                        `completedSources` INTEGER NOT NULL,
+                        `totalSources` INTEGER NOT NULL,
+                        `progressMessage` TEXT NOT NULL,
+                        `progressUpdatedAtMillis` INTEGER NOT NULL,
+                        `failedReason` TEXT,
+                        `duplicateSourceIds` TEXT NOT NULL,
+                        `totalSourceCount` INTEGER NOT NULL,
+                        `duplicateSourceCount` INTEGER NOT NULL,
+                        `processedSourceCount` INTEGER NOT NULL,
+                        `inventoryItemCount` INTEGER NOT NULL,
+                        `promoItemCount` INTEGER NOT NULL,
+                        `orderLineCount` INTEGER NOT NULL,
+                        `verifyItemCount` INTEGER NOT NULL,
+                        `stickyNoteCount` INTEGER NOT NULL,
+                        `locationTags` TEXT NOT NULL,
+                        PRIMARY KEY(`sessionId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliScanSourceRecord` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `sourceId` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `textSourceType` TEXT NOT NULL,
+                        `photoId` TEXT,
+                        `uri` TEXT,
+                        `capturedAtMillis` INTEGER,
+                        `receivedAtMillis` INTEGER NOT NULL,
+                        `location` TEXT,
+                        `locationTags` TEXT NOT NULL,
+                        `widthPx` INTEGER,
+                        `heightPx` INTEGER,
+                        `sizeBytes` INTEGER
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliInventorySnapshotRecord` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `capturedAtMillis` INTEGER NOT NULL,
+                        `weekStartEpochDay` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `sourceRefs` TEXT NOT NULL,
+                        `notes` TEXT
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliInventorySnapshotItemRecord` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `snapshotId` INTEGER NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `sku` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `casesOnHand` REAL NOT NULL,
+                        `caseWeightLbs` REAL,
+                        `useByEpochDay` INTEGER,
+                        `location` TEXT NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        `verified` INTEGER NOT NULL,
+                        `brandVendor` TEXT,
+                        `sourceRefs` TEXT NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliPromoItemRecord` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `sku` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `retailPrice` REAL,
+                        `salePrice` REAL,
+                        `dealType` TEXT NOT NULL,
+                        `discountPct` REAL,
+                        `adStartEpochDay` INTEGER NOT NULL,
+                        `adEndEpochDay` INTEGER NOT NULL,
+                        `placement` TEXT,
+                        `expectedDemandMultiplier` REAL,
+                        `sourceRefs` TEXT NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliSupplierOrderLineRecord` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `sku` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `packSize` TEXT,
+                        `suggestedCases` REAL NOT NULL,
+                        `forecastDemandCases` REAL NOT NULL,
+                        `safetyStockCases` REAL NOT NULL,
+                        `orderIndex` INTEGER NOT NULL,
+                        `sourceRefs` TEXT NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliVerifyLabelRecord` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `itemName` TEXT NOT NULL,
+                        `sku` TEXT,
+                        `packSize` TEXT,
+                        `caseWeightLbs` REAL,
+                        `packDateEpochDay` INTEGER,
+                        `useByEpochDay` INTEGER,
+                        `brandVendor` TEXT,
+                        `confidence` REAL NOT NULL,
+                        `sourcePhotoId` TEXT NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `DeliStickyNoteRecord` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `noteText` TEXT NOT NULL,
+                        `sourceRefs` TEXT NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_DeliInventorySnapshotRecord_weekStartEpochDay` ON `DeliInventorySnapshotRecord` (`weekStartEpochDay`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_DeliInventorySnapshotItemRecord_snapshotId` ON `DeliInventorySnapshotItemRecord` (`snapshotId`)")
+            }
+        }
+
         fun create(context: Context): OrderRadarDatabase = Room.databaseBuilder(
             context,
             OrderRadarDatabase::class.java,
             "order-radar.db"
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build()
     }
 }

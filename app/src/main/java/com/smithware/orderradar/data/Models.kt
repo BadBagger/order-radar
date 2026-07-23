@@ -1,7 +1,14 @@
 package com.smithware.orderradar.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.smithware.orderradar.domain.DeliCategory
+import com.smithware.orderradar.domain.DeliOcrTextSourceType
+import com.smithware.orderradar.domain.DeliScanSessionProgressState
+import com.smithware.orderradar.domain.DeliTextSourceKind
+import com.smithware.orderradar.domain.InventoryLocation
+import com.smithware.orderradar.domain.PromoDealType
 
 enum class ProductCategory { BOX_MEAT, GGM, DISPLAY, DELI_MEAT, PREPARED_FOOD, VENDOR, WAREHOUSE, GROCERY, OTHER }
 enum class CountSource { MANUAL, PHOTO_ASSIST, OCR_LABEL, DELIVERY, ADJUSTMENT }
@@ -204,6 +211,147 @@ data class VisionCorrection(
     val confirmedQuantity: Double,
     val aiConfidencePercent: Int,
     val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity
+data class DeliScanSessionRecord(
+    @PrimaryKey val sessionId: String,
+    val createdAtMillis: Long,
+    val updatedAtMillis: Long,
+    val progressState: DeliScanSessionProgressState,
+    val completedSources: Int,
+    val totalSources: Int,
+    val progressMessage: String,
+    val progressUpdatedAtMillis: Long,
+    val failedReason: String? = null,
+    val duplicateSourceIds: String = "",
+    val totalSourceCount: Int = 0,
+    val duplicateSourceCount: Int = 0,
+    val processedSourceCount: Int = 0,
+    val inventoryItemCount: Int = 0,
+    val promoItemCount: Int = 0,
+    val orderLineCount: Int = 0,
+    val verifyItemCount: Int = 0,
+    val stickyNoteCount: Int = 0,
+    val locationTags: String = ""
+)
+
+@Entity
+data class DeliScanSourceRecord(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: String,
+    val sourceId: String,
+    val kind: DeliTextSourceKind,
+    val text: String,
+    val textSourceType: DeliOcrTextSourceType,
+    val photoId: String? = null,
+    val uri: String? = null,
+    val capturedAtMillis: Long? = null,
+    val receivedAtMillis: Long,
+    val location: InventoryLocation? = null,
+    val locationTags: String = "",
+    val widthPx: Int? = null,
+    val heightPx: Int? = null,
+    val sizeBytes: Long? = null
+)
+
+@Entity(indices = [Index("weekStartEpochDay")])
+data class DeliInventorySnapshotRecord(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: String,
+    val capturedAtMillis: Long,
+    val weekStartEpochDay: Long,
+    val status: DeliScanSessionProgressState,
+    val sourceRefs: String = "",
+    val notes: String? = null
+)
+
+@Entity(indices = [Index("snapshotId")])
+data class DeliInventorySnapshotItemRecord(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val snapshotId: Long,
+    val sessionId: String,
+    val sku: String,
+    val name: String,
+    val category: DeliCategory,
+    val casesOnHand: Double,
+    val caseWeightLbs: Double? = null,
+    val useByEpochDay: Long? = null,
+    val location: InventoryLocation,
+    val confidence: Double,
+    val verified: Boolean,
+    val brandVendor: String? = null,
+    val sourceRefs: String = "",
+    val createdAtMillis: Long
+)
+
+@Entity
+data class DeliPromoItemRecord(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: String,
+    val sku: String,
+    val name: String,
+    val retailPrice: Double? = null,
+    val salePrice: Double? = null,
+    val dealType: PromoDealType,
+    val discountPct: Double? = null,
+    val adStartEpochDay: Long,
+    val adEndEpochDay: Long,
+    val placement: String? = null,
+    val expectedDemandMultiplier: Double? = null,
+    val sourceRefs: String = "",
+    val createdAtMillis: Long
+)
+
+@Entity
+data class DeliSupplierOrderLineRecord(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: String,
+    val sku: String,
+    val name: String,
+    val packSize: String? = null,
+    val suggestedCases: Double,
+    val forecastDemandCases: Double,
+    val safetyStockCases: Double,
+    val orderIndex: Int,
+    val sourceRefs: String = "",
+    val createdAtMillis: Long
+)
+
+@Entity
+data class DeliVerifyLabelRecord(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: String,
+    val itemName: String,
+    val sku: String? = null,
+    val packSize: String? = null,
+    val caseWeightLbs: Double? = null,
+    val packDateEpochDay: Long? = null,
+    val useByEpochDay: Long? = null,
+    val brandVendor: String? = null,
+    val confidence: Double,
+    val sourcePhotoId: String,
+    val createdAtMillis: Long
+)
+
+@Entity
+data class DeliStickyNoteRecord(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: String,
+    val noteText: String,
+    val sourceRefs: String = "",
+    val createdAtMillis: Long
+)
+
+data class DeliScanSessionEntityBundle(
+    val session: DeliScanSessionRecord,
+    val sources: List<DeliScanSourceRecord>,
+    val snapshot: DeliInventorySnapshotRecord?,
+    val inventoryItems: List<DeliInventorySnapshotItemRecord>,
+    val promoItems: List<DeliPromoItemRecord>,
+    val orderLines: List<DeliSupplierOrderLineRecord>,
+    val verifyLabels: List<DeliVerifyLabelRecord>,
+    val stickyNotes: List<DeliStickyNoteRecord>
 )
 
 data class ProductSnapshot(

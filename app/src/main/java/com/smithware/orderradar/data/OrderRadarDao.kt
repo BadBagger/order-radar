@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -127,4 +128,127 @@ interface OrderRadarDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertVisionCorrection(correction: VisionCorrection): Long
+
+    @Transaction
+    suspend fun replaceDeliScanSession(bundle: DeliScanSessionEntityBundle): Long {
+        deleteDeliSessionChildren(bundle.session.sessionId)
+        insertDeliScanSession(bundle.session)
+        insertDeliScanSources(bundle.sources)
+        val snapshotId = bundle.snapshot?.let { insertDeliInventorySnapshot(it) } ?: 0L
+        val inventoryItems = if (snapshotId > 0L) {
+            bundle.inventoryItems.map { it.copy(snapshotId = snapshotId) }
+        } else {
+            bundle.inventoryItems
+        }
+        insertDeliInventoryItems(inventoryItems)
+        insertDeliPromoItems(bundle.promoItems)
+        insertDeliSupplierOrderLines(bundle.orderLines)
+        insertDeliVerifyLabels(bundle.verifyLabels)
+        insertDeliStickyNotes(bundle.stickyNotes)
+        return snapshotId
+    }
+
+    @Transaction
+    suspend fun loadDeliScanSessionBundle(sessionId: String): DeliScanSessionEntityBundle? {
+        val session = deliScanSession(sessionId) ?: return null
+        val snapshot = latestDeliInventorySnapshotForSession(sessionId)
+        return DeliScanSessionEntityBundle(
+            session = session,
+            sources = deliScanSources(sessionId),
+            snapshot = snapshot,
+            inventoryItems = deliInventoryItems(sessionId),
+            promoItems = deliPromoItems(sessionId),
+            orderLines = deliSupplierOrderLines(sessionId),
+            verifyLabels = deliVerifyLabels(sessionId),
+            stickyNotes = deliStickyNotes(sessionId)
+        )
+    }
+
+    @Query("SELECT * FROM DeliScanSessionRecord ORDER BY updatedAtMillis DESC")
+    fun deliScanSessions(): Flow<List<DeliScanSessionRecord>>
+
+    @Query("SELECT * FROM DeliScanSessionRecord WHERE sessionId = :sessionId LIMIT 1")
+    suspend fun deliScanSession(sessionId: String): DeliScanSessionRecord?
+
+    @Query("DELETE FROM DeliScanSourceRecord WHERE sessionId = :sessionId")
+    suspend fun deleteDeliScanSources(sessionId: String)
+
+    @Query("DELETE FROM DeliInventorySnapshotRecord WHERE sessionId = :sessionId")
+    suspend fun deleteDeliInventorySnapshots(sessionId: String)
+
+    @Query("DELETE FROM DeliInventorySnapshotItemRecord WHERE sessionId = :sessionId")
+    suspend fun deleteDeliInventoryItems(sessionId: String)
+
+    @Query("DELETE FROM DeliPromoItemRecord WHERE sessionId = :sessionId")
+    suspend fun deleteDeliPromoItems(sessionId: String)
+
+    @Query("DELETE FROM DeliSupplierOrderLineRecord WHERE sessionId = :sessionId")
+    suspend fun deleteDeliSupplierOrderLines(sessionId: String)
+
+    @Query("DELETE FROM DeliVerifyLabelRecord WHERE sessionId = :sessionId")
+    suspend fun deleteDeliVerifyLabels(sessionId: String)
+
+    @Query("DELETE FROM DeliStickyNoteRecord WHERE sessionId = :sessionId")
+    suspend fun deleteDeliStickyNotes(sessionId: String)
+
+    suspend fun deleteDeliSessionChildren(sessionId: String) {
+        deleteDeliScanSources(sessionId)
+        deleteDeliInventorySnapshots(sessionId)
+        deleteDeliInventoryItems(sessionId)
+        deleteDeliPromoItems(sessionId)
+        deleteDeliSupplierOrderLines(sessionId)
+        deleteDeliVerifyLabels(sessionId)
+        deleteDeliStickyNotes(sessionId)
+    }
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliScanSession(session: DeliScanSessionRecord)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliScanSources(sources: List<DeliScanSourceRecord>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliInventorySnapshot(snapshot: DeliInventorySnapshotRecord): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliInventoryItems(items: List<DeliInventorySnapshotItemRecord>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliPromoItems(items: List<DeliPromoItemRecord>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliSupplierOrderLines(lines: List<DeliSupplierOrderLineRecord>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliVerifyLabels(labels: List<DeliVerifyLabelRecord>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeliStickyNotes(notes: List<DeliStickyNoteRecord>)
+
+    @Query("SELECT * FROM DeliScanSourceRecord WHERE sessionId = :sessionId ORDER BY id")
+    suspend fun deliScanSources(sessionId: String): List<DeliScanSourceRecord>
+
+    @Query("SELECT * FROM DeliInventorySnapshotRecord WHERE sessionId = :sessionId ORDER BY capturedAtMillis DESC LIMIT 1")
+    suspend fun latestDeliInventorySnapshotForSession(sessionId: String): DeliInventorySnapshotRecord?
+
+    @Query("SELECT * FROM DeliInventorySnapshotRecord WHERE weekStartEpochDay = :weekStartEpochDay ORDER BY capturedAtMillis DESC LIMIT 1")
+    suspend fun latestDeliInventorySnapshotForWeek(weekStartEpochDay: Long): DeliInventorySnapshotRecord?
+
+    @Query("SELECT * FROM DeliInventorySnapshotItemRecord WHERE sessionId = :sessionId ORDER BY name")
+    suspend fun deliInventoryItems(sessionId: String): List<DeliInventorySnapshotItemRecord>
+
+    @Query("SELECT * FROM DeliInventorySnapshotItemRecord WHERE snapshotId = :snapshotId ORDER BY name")
+    suspend fun deliInventoryItemsForSnapshot(snapshotId: Long): List<DeliInventorySnapshotItemRecord>
+
+    @Query("SELECT * FROM DeliPromoItemRecord WHERE sessionId = :sessionId ORDER BY name")
+    suspend fun deliPromoItems(sessionId: String): List<DeliPromoItemRecord>
+
+    @Query("SELECT * FROM DeliSupplierOrderLineRecord WHERE sessionId = :sessionId ORDER BY orderIndex")
+    suspend fun deliSupplierOrderLines(sessionId: String): List<DeliSupplierOrderLineRecord>
+
+    @Query("SELECT * FROM DeliVerifyLabelRecord WHERE sessionId = :sessionId ORDER BY confidence, itemName")
+    suspend fun deliVerifyLabels(sessionId: String): List<DeliVerifyLabelRecord>
+
+    @Query("SELECT * FROM DeliStickyNoteRecord WHERE sessionId = :sessionId ORDER BY id")
+    suspend fun deliStickyNotes(sessionId: String): List<DeliStickyNoteRecord>
 }
