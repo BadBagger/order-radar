@@ -91,7 +91,11 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                 showOrderImport -> OrderPhotoImportScreen(
                     products = state.snapshots.map { it.product },
                     trucks = state.trucks,
-                    onSaveOrder = vm::createOrderFromPhoto,
+                    provider = settings.visionProvider,
+                    apiKey = settings.activeVisionApiKey,
+                    model = settings.activeVisionModel,
+                    onImportOrder = { truck, rows, note -> vm.importOrderFromPhoto(truck, rows, note) },
+                    onOpenSettings = { showOrderImport = false; tab = Tab.Reports },
                     onBack = { showOrderImport = false }
                 )
                 editProductId != null -> ProductEditorScreen(
