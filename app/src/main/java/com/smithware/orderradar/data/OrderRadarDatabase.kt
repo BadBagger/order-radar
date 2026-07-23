@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DeliveryLine::class, VarianceLog::class, DisplayPlan::class, Recipe::class,
         RecipeIngredient::class, ProductionLog::class, PhotoAttachment::class, VisionCorrection::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -41,10 +41,16 @@ abstract class OrderRadarDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `Product` ADD COLUMN `visualIdentifiers` TEXT")
+            }
+        }
+
         fun create(context: Context): OrderRadarDatabase = Room.databaseBuilder(
             context,
             OrderRadarDatabase::class.java,
             "order-radar.db"
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     }
 }

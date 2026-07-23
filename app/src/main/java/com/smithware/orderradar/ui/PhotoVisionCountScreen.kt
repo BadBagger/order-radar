@@ -103,7 +103,9 @@ fun PhotoVisionCountScreen(
                 lastCountQuantity = snapshot.latestCount?.quantity,
                 lastCountUnit = snapshot.latestCount?.unit,
                 daysSinceLastCount = daysSince,
-                averageDailyUsage = MovementAverageEngine.averageDailyUsage(snapshot.movements).takeIf { it > 0.0 }
+                averageDailyUsage = MovementAverageEngine.averageDailyUsage(snapshot.movements).takeIf { it > 0.0 },
+                storageLocation = snapshot.product.storageLocation,
+                visualIdentifiers = snapshot.product.visualIdentifiers
             )
         }
     }
