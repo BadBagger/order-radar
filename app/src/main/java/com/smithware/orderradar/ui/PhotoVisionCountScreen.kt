@@ -465,12 +465,19 @@ private fun createPhotoFile(filesDir: File): File {
     return File(dir, "vision-photo-${System.currentTimeMillis()}.jpg")
 }
 
+// Deliberately conservative: a single shared word (e.g. "chicken") is not enough to confidently
+// pre-select a product, since a wrong-but-plausible-sounding match is worse than no match --
+// it silently mislabels real inventory. Require either the full name to contain/be contained by
+// the detection, or every one of the known product's significant words to show up in it.
 private fun bestProductMatch(detectedName: String, products: List<Product>): Product? {
-    val normalized = detectedName.lowercase()
+    val normalized = detectedName.lowercase().trim()
     return products
         .map { product ->
-            val words = product.name.lowercase().split(" ").filter { it.length >= 3 }
-            val score = words.count { normalized.contains(it) } + if (normalized.contains(product.name.lowercase()) || product.name.lowercase().contains(normalized)) 4 else 0
+            val productName = product.name.lowercase()
+            val words = productName.split(" ").filter { it.length >= 3 }
+            val fullContainment = normalized.contains(productName) || productName.contains(normalized)
+            val allWordsPresent = words.isNotEmpty() && words.all { normalized.contains(it) }
+            val score = if (fullContainment) 2 else if (allWordsPresent) 1 else 0
             product to score
         }
         .filter { it.second > 0 }

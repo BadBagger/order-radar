@@ -149,6 +149,7 @@ private fun HomeDashboardScreen(state: OrderRadarUiState, onOpenProduct: (Long) 
                 Text("Photo")
             }
         }
+        PhotoCaptureCard(onPhotoReview, onVisionCount)
         SectionHeader("Needs Order")
         state.forecasts.filter { it.status == ForecastStatus.ORDER_NEEDED || it.status == ForecastStatus.CRITICAL }.take(4).forEach { forecast ->
             val snapshot = state.snapshot(forecast.productId) ?: return@forEach
@@ -171,7 +172,6 @@ private fun HomeDashboardScreen(state: OrderRadarUiState, onOpenProduct: (Long) 
         }
         SectionHeader("Upcoming Trucks")
         state.trucks.forEach { TruckCard(it) }
-        PhotoCaptureCard(onPhotoReview, onVisionCount)
     }
 }
 
