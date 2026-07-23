@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DeliveryLine::class, VarianceLog::class, DisplayPlan::class, Recipe::class,
         RecipeIngredient::class, ProductionLog::class, PhotoAttachment::class, VisionCorrection::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -47,10 +47,41 @@ abstract class OrderRadarDatabase : RoomDatabase() {
             }
         }
 
+        // Seeds the real rotisserie chicken/wings/tenders lineup the manager described in chat
+        // (color-coded lids, box shapes, wing-number endings) so AI Shelf Count has real
+        // products to match against instead of only the generic sample data. Skips a name if a
+        // product with that exact name already exists, in case it was added by hand first.
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val now = System.currentTimeMillis()
+                val defaultNotes = "Added from your description of the store's color/box-shape system -- adjust safety stock, reorder point, and storage location to match reality."
+                val seeds = listOf(
+                    "Original Rotisserie Chicken" to "Square color swatch on front-left of box: orange = Original.",
+                    "Lemon Pepper Rotisserie Chicken" to "Square color swatch on front-left of box: yellow = Lemon Pepper.",
+                    "Mojo Rotisserie Chicken" to "Square color swatch on front-left of box: brown = Mojo.",
+                    "8-Piece Chicken" to "No color swatch on front-left square -- this is the 8-piece size, not a flavor variant.",
+                    "Hot & Spicy Wings" to "Box has a white band around the top holding the lid on, no front handle (unlike Tenders). Box number ends in 1.",
+                    "Plain Wings" to "Box has a white band around the top holding the lid on, no front handle (unlike Tenders). Box number ends in 0.",
+                    "Mardi Gras Wings" to "Almost fully square box, more square than other wing boxes. Has a label but it's low-contrast and hard to read -- identify by the near-square shape, not the label text.",
+                    "Tenders" to "Narrow, small box with handles on the front (unlike Wings boxes, which have no front handle)."
+                )
+                seeds.forEach { (name, visualId) ->
+                    db.execSQL(
+                        """
+                        INSERT INTO `Product` (name, category, itemNumber, upc, vendor, department, storageLocation, defaultUnit, caseSize, boxWeight, safetyStock, reorderPoint, active, productPhotoUri, notes, visualIdentifiers, createdAt, updatedAt)
+                        SELECT ?, 'PREPARED_FOOD', NULL, NULL, NULL, 'Deli', NULL, 'boxes', NULL, NULL, 1.0, 1.0, 1, NULL, ?, ?, ?, ?
+                        WHERE NOT EXISTS (SELECT 1 FROM `Product` WHERE name = ?)
+                        """.trimIndent(),
+                        arrayOf<Any>(name, defaultNotes, visualId, now, now, name)
+                    )
+                }
+            }
+        }
+
         fun create(context: Context): OrderRadarDatabase = Room.databaseBuilder(
             context,
             OrderRadarDatabase::class.java,
             "order-radar.db"
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
     }
 }
