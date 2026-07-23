@@ -34,6 +34,11 @@ class SettingsStore(private val context: Context) {
     private val anthropicVisionModelKey = stringPreferencesKey("vision_model")
     private val openAiVisionApiKeyKey = stringPreferencesKey("openai_vision_api_key")
     private val openAiVisionModelKey = stringPreferencesKey("openai_vision_model")
+    // Ollama isn't a selectable primary provider -- it's an optional local/self-hosted second
+    // opinion run alongside whichever primary provider is configured (see "Compare with Ollama"
+    // in AI Shelf Count), so there's no api key, just a reachable base URL.
+    private val ollamaBaseUrlKey = stringPreferencesKey("ollama_base_url")
+    private val ollamaVisionModelKey = stringPreferencesKey("ollama_vision_model")
 
     val settings = context.dataStore.data.map { prefs ->
         AppSettings(
@@ -43,7 +48,9 @@ class SettingsStore(private val context: Context) {
             anthropicVisionApiKey = prefs[anthropicVisionApiKeyKey] ?: "",
             anthropicVisionModel = prefs[anthropicVisionModelKey] ?: DEFAULT_ANTHROPIC_VISION_MODEL,
             openAiVisionApiKey = prefs[openAiVisionApiKeyKey] ?: "",
-            openAiVisionModel = prefs[openAiVisionModelKey] ?: DEFAULT_OPENAI_VISION_MODEL
+            openAiVisionModel = prefs[openAiVisionModelKey] ?: DEFAULT_OPENAI_VISION_MODEL,
+            ollamaBaseUrl = prefs[ollamaBaseUrlKey] ?: "",
+            ollamaVisionModel = prefs[ollamaVisionModelKey] ?: DEFAULT_OLLAMA_VISION_MODEL
         )
     }
 
@@ -72,9 +79,17 @@ class SettingsStore(private val context: Context) {
         }
     }
 
+    suspend fun updateOllamaSettings(baseUrl: String, model: String) {
+        context.dataStore.edit {
+            it[ollamaBaseUrlKey] = baseUrl.trim()
+            it[ollamaVisionModelKey] = model.ifBlank { DEFAULT_OLLAMA_VISION_MODEL }
+        }
+    }
+
     companion object {
         const val DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5"
         const val DEFAULT_OPENAI_VISION_MODEL = "gpt-4o-mini"
+        const val DEFAULT_OLLAMA_VISION_MODEL = "qwen2.5vl:7b"
     }
 }
 
@@ -85,8 +100,11 @@ data class AppSettings(
     val anthropicVisionApiKey: String = "",
     val anthropicVisionModel: String = SettingsStore.DEFAULT_ANTHROPIC_VISION_MODEL,
     val openAiVisionApiKey: String = "",
-    val openAiVisionModel: String = SettingsStore.DEFAULT_OPENAI_VISION_MODEL
+    val openAiVisionModel: String = SettingsStore.DEFAULT_OPENAI_VISION_MODEL,
+    val ollamaBaseUrl: String = "",
+    val ollamaVisionModel: String = SettingsStore.DEFAULT_OLLAMA_VISION_MODEL
 ) {
     val activeVisionApiKey: String get() = if (visionProvider == VisionProvider.OPENAI) openAiVisionApiKey else anthropicVisionApiKey
     val activeVisionModel: String get() = if (visionProvider == VisionProvider.OPENAI) openAiVisionModel else anthropicVisionModel
+    val ollamaConfigured: Boolean get() = ollamaBaseUrl.isNotBlank()
 }

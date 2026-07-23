@@ -6,6 +6,9 @@
 
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
+    <!-- Cleartext (plain http://) is only used for the manager's own optional, self-hosted
+         Ollama endpoint (Settings > AI Shelf Count Setup); OpenAI/Anthropic calls are always
+         https:// regardless of this setting. -->
     <application
         android:name=".OrderRadarApp"
         android:allowBackup="true"
@@ -13,7 +16,8 @@
         android:label="@string/app_name"
         android:roundIcon="@drawable/order_radar_logo"
         android:supportsRtl="true"
-        android:theme="@style/Theme.OrderRadar">
+        android:theme="@style/Theme.OrderRadar"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true">

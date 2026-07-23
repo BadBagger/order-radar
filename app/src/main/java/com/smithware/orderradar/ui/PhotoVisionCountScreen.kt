@@ -78,7 +78,10 @@ private data class VisionSuggestionRow(
     val displayIdentificationConfidencePercent: Int,
     val displayCountConfidencePercent: Int,
     val quantity: String,
-    val checked: Boolean = true
+    val checked: Boolean = true,
+    // Set only after "Compare with Ollama" runs -- a second opinion from a different model on
+    // the same photos, shown so a disagreement surfaces before saving instead of after.
+    val compareNote: String? = null
 )
 
 @Composable
@@ -87,6 +90,8 @@ fun PhotoVisionCountScreen(
     provider: VisionProvider,
     apiKey: String,
     model: String,
+    ollamaBaseUrl: String,
+    ollamaModel: String,
     corrections: List<VisionCorrection>,
     onSaveCounts: (List<VisionCountRow>, String?) -> Unit,
     onOpenSettings: () -> Unit,
@@ -130,6 +135,7 @@ fun PhotoVisionCountScreen(
     var photos by remember { mutableStateOf<List<String>>(emptyList()) }
     var status by remember { mutableStateOf("Take a wide, well-lit photo of the shelf or cooler you want to count, or choose one or more from your gallery. If it doesn't fit in one frame, add more photos -- the AI reasons about them together and won't double-count overlapping edges.") }
     var isLoading by remember { mutableStateOf(false) }
+    var isComparing by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     var rows by remember { mutableStateOf<List<VisionSuggestionRow>>(emptyList()) }
 
@@ -187,6 +193,66 @@ fun PhotoVisionCountScreen(
                 }
                 is VisionCountResult.Failure -> {
                     status = result.message
+                }
+            }
+        }
+    }
+
+    // Optional second opinion: runs the exact same photos through the manager's own local
+    // Ollama model and annotates each row instead of overwriting anything -- the primary
+    // provider's result stays what gets saved, this is purely a cross-check surfaced to the
+    // human before they confirm.
+    fun runOllamaCompare() {
+        if (photos.isEmpty() || ollamaBaseUrl.isBlank()) return
+        isComparing = true
+        status = "Running the same photos through Ollama for a second opinion..."
+        scope.launch {
+            val files = photos.map { File(it) }
+            val combinedOcr = files.mapIndexed { index, file ->
+                val text = withContext(Dispatchers.IO) { ocrText(file) }
+                "Photo ${index + 1}: ${text.ifBlank { "(no legible text)" }}"
+            }.joinToString("\n\n")
+            val result = withContext(Dispatchers.IO) {
+                VisionCountClient.countShelfPhotoViaOllama(ollamaBaseUrl, ollamaModel, files, products.map { it.name }, combinedOcr, historyHints)
+            }
+            isComparing = false
+            when (result) {
+                is VisionCountResult.Success -> {
+                    val usedOllama = mutableSetOf<Int>()
+                    val annotated = rows.map { row ->
+                        val matchIndex = result.items.indexOfFirst { candidate ->
+                            candidate.itemName.lowercase().let { it == row.suggestion.itemName.lowercase() || it.contains(row.suggestion.itemName.lowercase()) || row.suggestion.itemName.lowercase().contains(it) }
+                        }
+                        if (matchIndex == -1) {
+                            row.copy(compareNote = "Ollama: didn't detect this item.")
+                        } else {
+                            usedOllama += matchIndex
+                            val ollamaItem = result.items[matchIndex]
+                            val primaryQuantity = row.quantity.toDoubleOrNull() ?: row.suggestion.estimatedQuantity
+                            val agrees = kotlin.math.abs(ollamaItem.estimatedQuantity - primaryQuantity) < 0.6
+                            row.copy(
+                                compareNote = if (agrees) "Ollama agrees (~${ollamaItem.estimatedQuantity.clean()})."
+                                else "Ollama disagrees: says ${ollamaItem.estimatedQuantity.clean()}, not ${primaryQuantity.clean()}."
+                            )
+                        }
+                    }
+                    val extras = result.items.filterIndexed { index, _ -> index !in usedOllama }.map { ollamaOnly ->
+                        val match = bestProductMatch(ollamaOnly.itemName, products)
+                        VisionSuggestionRow(
+                            suggestion = ollamaOnly,
+                            matchedProductId = match?.id,
+                            displayIdentificationConfidencePercent = ollamaOnly.identificationConfidencePercent,
+                            displayCountConfidencePercent = ollamaOnly.countConfidencePercent,
+                            quantity = ollamaOnly.estimatedQuantity.clean(),
+                            checked = false,
+                            compareNote = "Ollama only: your primary provider didn't detect this. Review before including."
+                        )
+                    }
+                    rows = annotated + extras
+                    status = "Compare complete. ${extras.size} item(s) only Ollama saw are added unchecked below -- review before saving."
+                }
+                is VisionCountResult.Failure -> {
+                    status = "Ollama compare failed: ${result.message}"
                 }
             }
         }
@@ -373,6 +439,20 @@ fun PhotoVisionCountScreen(
                     }
                 }
             }
+            if (ollamaBaseUrl.isNotBlank()) {
+                item {
+                    OutlinedButton(
+                        onClick = { runOllamaCompare() },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                        enabled = !isComparing && !isLoading,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Compare with Ollama", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
         item {
             AssistCard {
@@ -381,7 +461,7 @@ fun PhotoVisionCountScreen(
                     Spacer(Modifier.width(8.dp))
                     Text("AI status", fontWeight = FontWeight.Bold)
                 }
-                if (isLoading) {
+                if (isLoading || isComparing) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = RadarLime)
                 }
                 Text(status, color = RadarMuted)
@@ -467,6 +547,9 @@ private fun VisionRow(products: List<Product>, row: VisionSuggestionRow, onChang
                 }
                 if (row.suggestion.notes.isNotBlank()) {
                     Text(row.suggestion.notes, color = RadarMuted, style = MaterialTheme.typography.labelSmall)
+                }
+                row.compareNote?.let { note ->
+                    Text(note, color = if (note.startsWith("Ollama agrees")) RadarLime else RadarOrange, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
