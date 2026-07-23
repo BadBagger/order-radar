@@ -460,8 +460,141 @@ private fun ReportsScreen(
 @Composable
 private fun DeliWorkflowScreen() {
     val today = LocalDate.now()
-    val result = remember(today) { sampleDeliReconciliation(today) }
+    var sourceKind by remember { mutableStateOf(DeliTextSourceKind.INVENTORY) }
+    var location by remember { mutableStateOf(InventoryLocation.COOLER) }
+    var sourceText by remember { mutableStateOf(defaultDeliSourceText(sourceKind, today)) }
+    var sourceCounter by remember { mutableStateOf(1) }
+    var queuedSources by remember { mutableStateOf<List<DeliScanSourceDraft>>(emptyList()) }
+    var sessionStatus by remember { mutableStateOf(DeliExtractionStatus.QUEUED) }
+    var activeSession by remember { mutableStateOf<DeliScanSession?>(null) }
+    val batch = activeSession?.result
+    val result = remember(batch, today) {
+        if (batch == null) {
+            sampleDeliReconciliation(today)
+        } else {
+            DeliReconciliationEngine.reconcile(
+                DeliReconciliationRequest(
+                    today = today,
+                    nextDeliveryDate = today.plusDays(3),
+                    coverageWindowDays = 7,
+                    inventory = batch.inventoryItems,
+                    promos = batch.promoItems,
+                    orderLines = batch.orderLines
+                )
+            )
+        }
+    }
+    val summary = activeSession?.summary
+
+    LaunchedEffect(sourceKind) {
+        sourceText = defaultDeliSourceText(sourceKind, today)
+    }
+
     Screen("Deli Order Radar", "Backstock, ad lift, expiry, and supplier-order review.") {
+        SectionHeader("Scan Session")
+        SimpleCard {
+            Text("Reviewed batch input", fontWeight = FontWeight.Bold)
+            Text("Start a session, tag each source, then build the batch for verification before order review.", color = RadarMuted)
+            BigActionButton("Start New Session", Icons.Default.PlayArrow) {
+                queuedSources = emptyList()
+                activeSession = null
+                sessionStatus = DeliExtractionStatus.QUEUED
+                sourceCounter = 1
+            }
+        }
+        DeliProgressPanel(
+            status = sessionStatus,
+            session = activeSession,
+            queuedCount = queuedSources.size
+        )
+        SectionHeader("Add Source")
+        SimpleCard {
+            EnumPicker("Source type", sourceKind, DeliTextSourceKind.entries) { sourceKind = it }
+            EnumPicker("Inventory location", location, InventoryLocation.entries) { location = it }
+            OutlinedTextField(
+                value = sourceText,
+                onValueChange = { sourceText = it },
+                label = { Text("Reviewed OCR / note text") },
+                minLines = 4,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = {
+                        sourceText = defaultDeliSourceText(sourceKind, today)
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Sample")
+                }
+                Button(
+                    onClick = {
+                        val cleanText = sourceText.trim()
+                        if (cleanText.isNotBlank()) {
+                            queuedSources = queuedSources + DeliScanSourceDraft(
+                                id = "${sourceKind.name.lowercase(Locale.US)}-$sourceCounter",
+                                kind = sourceKind,
+                                location = location,
+                                rawText = cleanText,
+                                textSourceType = DeliOcrTextSourceType.MANUAL_ENTRY,
+                                receivedAtMillis = System.currentTimeMillis()
+                            )
+                            sourceCounter += 1
+                            activeSession = null
+                            sessionStatus = DeliExtractionStatus.QUEUED
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Queue")
+                }
+            }
+            Button(
+                onClick = {
+                    if (queuedSources.isNotEmpty()) {
+                        sessionStatus = DeliExtractionStatus.RUNNING
+                        val session = DeliScanSessionRunner.buildReviewedTextSession(
+                            sessionId = "deli-${System.currentTimeMillis()}",
+                            drafts = queuedSources,
+                            today = today,
+                            nowMillis = System.currentTimeMillis()
+                        )
+                        activeSession = session
+                        sessionStatus = if ((session.summary?.verifyItemCount ?: 0) > 0) {
+                            DeliExtractionStatus.NEEDS_VERIFICATION
+                        } else {
+                            DeliExtractionStatus.COMPLETE
+                        }
+                    }
+                },
+                enabled = queuedSources.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = RadarOrange, contentColor = RadarCharcoal),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Build, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Build Parsed Batch", fontWeight = FontWeight.Bold)
+            }
+        }
+        if (queuedSources.isNotEmpty()) {
+            SectionHeader("Queued Sources")
+            queuedSources.forEach { source ->
+                SimpleCard {
+                    Text("${source.kind.name.readable()} | ${source.location.name.readable()}", fontWeight = FontWeight.SemiBold)
+                    Text(source.rawText.lineSequence().firstOrNull().orEmpty().take(100), color = RadarMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+        SectionHeader("Parsed Batch Counts")
+        DeliBatchCounts(summary, result)
         SectionHeader("Order Sheet")
         result.orderSheet.forEach { rec ->
             SimpleCard {
@@ -502,6 +635,95 @@ private fun DeliWorkflowScreen() {
                     Text("Review label before this count affects ordering.", color = RadarOrange)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DeliProgressPanel(status: DeliExtractionStatus, session: DeliScanSession?, queuedCount: Int) {
+    SimpleCard {
+        val steps = listOf(
+            DeliExtractionStatus.QUEUED,
+            DeliExtractionStatus.RUNNING,
+            DeliExtractionStatus.NEEDS_VERIFICATION,
+            DeliExtractionStatus.COMPLETE
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            steps.forEach { step ->
+                DeliStatusPill(
+                    label = step.name.readable(),
+                    active = step == status || (step == DeliExtractionStatus.COMPLETE && session?.progress?.state == DeliScanSessionProgressState.READY_FOR_REVIEW),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+        val completed = session?.progress?.completedSources ?: 0
+        val total = session?.progress?.totalSources ?: queuedCount
+        LinearProgressIndicator(
+            progress = { if (total <= 0) 0f else completed.toFloat() / total.toFloat() },
+            modifier = Modifier.fillMaxWidth(),
+            color = RadarLime,
+            trackColor = RadarPanel
+        )
+        Text(
+            when {
+                session != null -> session.progress.message
+                queuedCount > 0 -> "$queuedCount source(s) queued for parsing."
+                else -> "No deli scan sources queued."
+            },
+            color = RadarMuted
+        )
+    }
+}
+
+@Composable
+private fun DeliStatusPill(label: String, active: Boolean, modifier: Modifier = Modifier) {
+    Surface(
+        color = if (active) RadarLime else RadarPanel,
+        contentColor = if (active) RadarCharcoal else RadarMuted,
+        shape = RoundedCornerShape(6.dp),
+        modifier = modifier.heightIn(min = 34.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun DeliBatchCounts(summary: DeliScanSessionSummary?, result: DeliReconciliationResult) {
+    val counts = if (summary != null) {
+        listOf(
+            "Sources" to "${summary.processedSourceCount}/${summary.totalSourceCount}",
+            "Inventory" to summary.inventoryItemCount.toString(),
+            "Promos" to summary.promoItemCount.toString(),
+            "Order rows" to summary.orderLineCount.toString(),
+            "Verify" to summary.verifyItemCount.toString(),
+            "Notes" to summary.stickyNoteCount.toString()
+        )
+    } else {
+        listOf(
+            "Sources" to "sample",
+            "Inventory" to result.expiryRadar.size.toString(),
+            "Promos" to "1",
+            "Order rows" to result.orderSheet.size.toString(),
+            "Verify" to result.verifyList.size.toString(),
+            "Notes" to "0"
+        )
+    }
+    SimpleCard {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            counts.forEach { (label, value) ->
+                Surface(color = RadarPanel, shape = RoundedCornerShape(6.dp)) {
+                    Column(Modifier.widthIn(min = 92.dp).padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(value, color = RadarText, fontWeight = FontWeight.Bold)
+                        Text(label, color = RadarMuted, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+        summary?.locationTags?.takeIf { it.isNotEmpty() }?.let { tags ->
+            Text("Tags: ${tags.joinToString(", ")}", color = RadarMuted, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -1051,6 +1273,14 @@ private fun sampleDeliReconciliation(today: LocalDate): DeliReconciliationResult
         )
     )
 }
+
+private fun defaultDeliSourceText(kind: DeliTextSourceKind, today: LocalDate): String =
+    when (kind) {
+        DeliTextSourceKind.INVENTORY -> "0332094 Soup Chicken Noodle 4 / 4 LB Use By ${today.plusDays(5)} Brand Blount"
+        DeliTextSourceKind.PROMO -> "SKU 0332094 Soup Chicken Noodle BOGO retail 4.99 sale 2.49 50%"
+        DeliTextSourceKind.ORDER_SCREEN -> "0332094 - SOUP CHICKEN NOODLE 4 / 4 LB 2 0 WK"
+        DeliTextSourceKind.NOTE -> "Note: add extra soup for front case lunch rush"
+    }
 
 @Composable
 private fun ProductThumb(category: ProductCategory) {
