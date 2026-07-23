@@ -164,7 +164,12 @@ object DeliReconciliationEngine {
                     productionHint = productionHint(item, days)
                 )
             }
-            .sortedWith(compareBy<ExpiryRadarItem> { it.daysUntilExpiry ?: Int.MAX_VALUE }.thenBy { it.itemName })
+            .sortedWith(
+                compareBy<ExpiryRadarItem> { it.bucket.useFirstRank() }
+                    .thenBy { it.daysUntilExpiry ?: Int.MAX_VALUE }
+                    .thenBy { it.location.name }
+                    .thenBy { it.itemName }
+            )
 
     private fun bucket(days: Int?): ExpiryBucket =
         when {
@@ -176,14 +181,27 @@ object DeliReconciliationEngine {
         }
 
     private fun productionHint(item: DeliInventoryItem, days: Int?): String? {
-        if (days == null || days > 5) return null
+        if (days == null || days > 10) return null
         if (item.category !in setOf(DeliCategory.RAW_CHICKEN, DeliCategory.WINGS_TENDERS)) return null
         val pounds = item.caseWeightLbs?.let { item.casesOnHand * it }
         val amount = pounds?.let { "${it.clean()} lb" } ?: "${item.casesOnHand.clean()} cases"
         val whenText = if (days <= 0) "today" else "in $days day(s)"
-        return "$amount ${item.name} expires $whenText. Prioritize hot case or production before ordering more."
+        return when {
+            days <= 2 -> "$amount ${item.name} expires $whenText. Prioritize hot case or production before ordering more."
+            days <= 5 -> "$amount ${item.name} expires $whenText. Plan hot case or production before the next truck."
+            else -> "$amount ${item.name} expires $whenText. Watch for production opportunities before it becomes use-first."
+        }
     }
 }
+
+private fun ExpiryBucket.useFirstRank(): Int =
+    when (this) {
+        ExpiryBucket.DAYS_0_TO_2 -> 0
+        ExpiryBucket.DAYS_3_TO_5 -> 1
+        ExpiryBucket.DAYS_6_TO_10 -> 2
+        ExpiryBucket.LATER -> 3
+        ExpiryBucket.UNKNOWN -> 4
+    }
 
 private fun PromoItem.affectsCoverage(nextDeliveryDate: LocalDate, coverageEnd: LocalDate): Boolean {
     val overlapsCoverage = !adEndDate.isBefore(nextDeliveryDate) && !adStartDate.isAfter(coverageEnd)

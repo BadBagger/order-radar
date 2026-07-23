@@ -1,5 +1,7 @@
 package com.smithware.orderradar.ui
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,7 +18,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -460,6 +462,9 @@ private fun ReportsScreen(
 @Composable
 private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
     val today = LocalDate.now()
+    val nextDelivery = today.plusDays(3)
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     var sourceKind by remember { mutableStateOf(DeliTextSourceKind.INVENTORY) }
     var location by remember { mutableStateOf(InventoryLocation.COOLER) }
     var sourceText by remember { mutableStateOf(defaultDeliSourceText(sourceKind, today)) }
@@ -470,14 +475,14 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
     var reviewedInventory by remember { mutableStateOf<List<DeliInventoryItem>>(emptyList()) }
     var reviewedOrderLines by remember { mutableStateOf<List<SupplierOrderLine>>(emptyList()) }
     val batch = activeSession?.result
-    val result = remember(batch, reviewedInventory, reviewedOrderLines, today) {
+    val result = remember(batch, reviewedInventory, reviewedOrderLines, today, nextDelivery) {
         if (batch == null) {
-            sampleDeliReconciliation(today)
+            emptyDeliReconciliation()
         } else {
             DeliReconciliationEngine.reconcile(
                 DeliReconciliationRequest(
                     today = today,
-                    nextDeliveryDate = today.plusDays(3),
+                    nextDeliveryDate = nextDelivery,
                     coverageWindowDays = 7,
                     inventory = reviewedInventory,
                     promos = batch.promoItems,
@@ -605,6 +610,53 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
         SectionHeader("Parsed Batch Counts")
         DeliBatchCounts(summary, result)
         if (batch != null) {
+            SectionHeader("Export Session")
+            SimpleCard {
+                Text("Session output", fontWeight = FontWeight.Bold)
+                Text("CSV and share text are built from the reviewed inventory and supplier order rows shown below.", color = RadarMuted)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { clipboard.setText(AnnotatedString(DeliSessionExporter.expiryCsv(result, today))) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.FileDownload, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Expiry CSV")
+                    }
+                    OutlinedButton(
+                        onClick = { clipboard.setText(AnnotatedString(DeliSessionExporter.orderSheetCsv(result))) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Assignment, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Order CSV")
+                    }
+                }
+                Button(
+                    onClick = { shareText(context, DeliSessionExporter.shareSummary(result, today, nextDelivery)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Share Session Summary", fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                    onClick = { },
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.PictureAsPdf, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("PDF Export")
+                }
+            }
+        }
+        if (batch != null) {
             SectionHeader("Review & Correct Inventory")
             DeliInventoryReviewSection(
                 inventory = reviewedInventory,
@@ -645,6 +697,9 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
             )
         }
         SectionHeader("Order Sheet")
+        if (result.orderSheet.isEmpty()) {
+            EmptyState("No order-sheet rows", "Queue supplier order-screen text, build the batch, then review the generated order sheet.")
+        }
         result.orderSheet.forEach { rec ->
             SimpleCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -659,16 +714,28 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
         }
 
         SectionHeader("Expiry Radar")
-        result.expiryRadar.filter { it.bucket != ExpiryBucket.LATER }.forEach { item ->
-            SimpleCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(item.itemName, fontWeight = FontWeight.SemiBold)
-                        Text("${item.cases.clean()} cases${item.pounds?.let { " | ${it.clean()} lb" } ?: ""} | ${item.location.name.readable()}", color = RadarMuted)
-                        Text("Use by ${item.useByDate ?: "unknown"} | ${item.daysUntilExpiry?.let { if (it <= 0) "expires today" else "expires in $it day(s)" } ?: "date unreadable"}", color = RadarOrange)
-                        item.productionHint?.let { Text(it, color = RadarLime) }
+        if (batch == null) {
+            EmptyState("No active expiry radar", "Build a deli scan session to see 0-2, 3-5, and 6-10 day use-first buckets.")
+        } else {
+            activeBuckets.forEach { bucket ->
+                SectionHeader(bucket.label())
+                val items = result.expiryRadar.filter { it.bucket == bucket }
+                if (items.isEmpty()) {
+                    EmptyState("No ${bucket.label()} items", "No reviewed inventory labels currently fall in this use-first bucket.")
+                } else {
+                    items.forEach { item ->
+                        SimpleCard {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(item.itemName, fontWeight = FontWeight.SemiBold)
+                                    Text("${item.cases.clean()} cases${item.pounds?.let { " | ${it.clean()} lb" } ?: ""} | ${item.location.name.readable()}", color = RadarMuted)
+                                    Text("Use by ${item.useByDate ?: "unknown"} | ${item.relativeUseBy(today)}", color = RadarOrange)
+                                    item.productionHint?.let { Text(it, color = RadarLime) }
+                                }
+                                Text(item.bucket.label(), color = RadarMuted, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
                     }
-                    Text(item.bucket.name.readable(), color = RadarMuted, style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -878,11 +945,11 @@ private fun DeliBatchCounts(summary: DeliScanSessionSummary?, result: DeliReconc
         )
     } else {
         listOf(
-            "Sources" to "sample",
-            "Inventory" to result.expiryRadar.size.toString(),
-            "Promos" to "1",
-            "Order rows" to result.orderSheet.size.toString(),
-            "Verify" to result.verifyList.size.toString(),
+            "Sources" to "0/0",
+            "Inventory" to "0",
+            "Promos" to "0",
+            "Order rows" to "0",
+            "Verify" to "0",
             "Notes" to "0"
         )
     }
@@ -1532,84 +1599,18 @@ private fun DeliActionChip(action: DeliOrderAction) {
     }
 }
 
-private fun sampleDeliReconciliation(today: LocalDate): DeliReconciliationResult {
-    val nextDelivery = today.plusDays(3)
-    return DeliReconciliationEngine.reconcile(
-        DeliReconciliationRequest(
-            today = today,
-            nextDeliveryDate = nextDelivery,
-            coverageWindowDays = 7,
-            inventory = listOf(
-                DeliInventoryItem(
-                    sku = "300441",
-                    name = "Jumbo wings",
-                    category = DeliCategory.WINGS_TENDERS,
-                    casesOnHand = 10.0,
-                    caseWeightLbs = 40.0,
-                    useByDate = today.plusDays(1),
-                    location = InventoryLocation.COOLER,
-                    confidence = 0.94,
-                    photoRefs = listOf("cooler-1"),
-                    verified = true
-                ),
-                DeliInventoryItem(
-                    sku = "441229",
-                    name = "Grab n go pudding",
-                    category = DeliCategory.PUDDING,
-                    casesOnHand = 1.0,
-                    caseWeightLbs = 12.0,
-                    useByDate = today.plusDays(9),
-                    location = InventoryLocation.SALES_FLOOR,
-                    confidence = 0.91,
-                    photoRefs = listOf("floor-1"),
-                    verified = true
-                ),
-                DeliInventoryItem(
-                    sku = "772018",
-                    name = "Turkey breast",
-                    category = DeliCategory.DELI_MEAT,
-                    casesOnHand = 2.0,
-                    caseWeightLbs = 9.5,
-                    useByDate = today.plusDays(8),
-                    location = InventoryLocation.SLICER_BACKSTOCK,
-                    confidence = 0.57,
-                    photoRefs = listOf("slicer-2"),
-                    verified = false
-                ),
-                DeliInventoryItem(
-                    sku = "884202",
-                    name = "Macaroni salad",
-                    category = DeliCategory.SALADS,
-                    casesOnHand = 12.0,
-                    caseWeightLbs = 10.0,
-                    useByDate = today.plusDays(8),
-                    location = InventoryLocation.COOLER,
-                    confidence = 0.96,
-                    photoRefs = listOf("cooler-2"),
-                    verified = true
-                )
-            ),
-            promos = listOf(
-                PromoItem(
-                    sku = "441229",
-                    name = "Grab n go pudding",
-                    dealType = PromoDealType.BOGO,
-                    retailPrice = 4.99,
-                    salePrice = 2.49,
-                    discountPct = 50.0,
-                    adStartDate = today.plusDays(4),
-                    adEndDate = today.plusDays(10),
-                    placement = "weekly ad"
-                )
-            ),
-            orderLines = listOf(
-                SupplierOrderLine("300441", "Jumbo wings", "40 lb", suggestedCases = 3.0, forecastDemandCases = 4.0, safetyStockCases = 1.0, orderIndex = 0),
-                SupplierOrderLine("441229", "Grab n go pudding", "12 ct", suggestedCases = 2.0, forecastDemandCases = 4.0, safetyStockCases = 1.0, orderIndex = 1),
-                SupplierOrderLine("772018", "Turkey breast", "random weight", suggestedCases = 2.0, forecastDemandCases = 3.0, safetyStockCases = 1.0, orderIndex = 2),
-                SupplierOrderLine("884202", "Macaroni salad", "10 lb", suggestedCases = 5.0, forecastDemandCases = 5.0, safetyStockCases = 1.0, orderIndex = 3)
-            )
-        )
+private fun emptyDeliReconciliation(): DeliReconciliationResult =
+    DeliReconciliationResult(
+        orderSheet = emptyList(),
+        expiryRadar = emptyList(),
+        verifyList = emptyList()
     )
+
+private fun shareText(context: Context, text: String) {
+    val intent = Intent(Intent.ACTION_SEND)
+        .setType("text/plain")
+        .putExtra(Intent.EXTRA_TEXT, text)
+    context.startActivity(Intent.createChooser(intent, "Share Order Radar summary"))
 }
 
 private fun defaultDeliSourceText(kind: DeliTextSourceKind, today: LocalDate): String =
