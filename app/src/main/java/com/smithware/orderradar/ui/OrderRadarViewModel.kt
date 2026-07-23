@@ -18,6 +18,12 @@ data class VisionCountRow(
     val confirmedQuantity: Double
 )
 
+data class OrderImportRow(
+    val suggestion: OrderLineSuggestion,
+    val matchedProduct: Product?,
+    val confirmedQuantity: Double
+)
+
 data class OrderRadarUiState(
     val snapshots: List<ProductSnapshot> = emptyList(),
     val forecasts: List<ForecastResult> = emptyList(),
@@ -91,7 +97,23 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.deleteProduct(product)
     }
 
-    fun createOrderFromPhoto(truck: TruckSchedule, lines: List<Pair<Product, Double>>, sourceNote: String) = viewModelScope.launch {
+    // AI-read order-form lines can name a product not yet in the catalog, so any
+    // unmatched row becomes a new product first, same pattern as saveVisionCounts.
+    fun importOrderFromPhoto(truck: TruckSchedule, rows: List<OrderImportRow>, sourceNote: String) = viewModelScope.launch {
+        val lines = rows.map { row ->
+            val product = row.matchedProduct ?: run {
+                val newProduct = Product(
+                    name = row.suggestion.itemName,
+                    category = ProductCategory.OTHER,
+                    defaultUnit = row.suggestion.unit,
+                    safetyStock = settings.value.defaultSafetyStock,
+                    reorderPoint = settings.value.defaultSafetyStock,
+                    notes = "Created from AI order form import."
+                )
+                newProduct.copy(id = repo.saveProduct(newProduct))
+            }
+            product to row.confirmedQuantity
+        }
         repo.createOrderFromPhoto(truck, lines, sourceNote)
     }
 

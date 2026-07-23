@@ -42,6 +42,25 @@ sealed class VisionCountResult {
     data class Failure(val message: String) : VisionCountResult()
 }
 
+data class OrderLineSuggestion(
+    val itemName: String,
+    val orderedQuantity: Double,
+    val unit: String,
+    val confidencePercent: Int,
+    val notes: String
+) {
+    val confidenceLabel: String get() = when {
+        confidencePercent >= 80 -> "high"
+        confidencePercent >= 50 -> "medium"
+        else -> "low"
+    }
+}
+
+sealed class OrderImportResult {
+    data class Success(val items: List<OrderLineSuggestion>) : OrderImportResult()
+    data class Failure(val message: String) : OrderImportResult()
+}
+
 /**
  * Sends a captured shelf/cooler photo to the user's own cloud AI provider (OpenAI or
  * Anthropic, whichever they've configured -- both equally first-class, same prompt/
@@ -120,6 +139,71 @@ object VisionCountClient {
             {"items":[{"name":"string","quantity":number,"unit":"string","confidence":number,"notes":"string"}]}
             "confidence" must be an integer from 0 to 100 reflecting how sure you are of that specific count, given photo quality and how well it matches the history above. Use "unit" values like "boxes", "cases", "each", "tubs", or "trays" based on how the product is packaged. Keep "notes" under 15 words explaining what you counted or any uncertainty (e.g. partially hidden items, a blurry region, or that you cross-checked against history).
         """.trimIndent()
+    }
+
+    // Reads a box meat / grocery order form, order guide, or handwritten order sheet and pulls
+    // out every line item + quantity being ordered -- a document-reading task, not a shelf
+    // count, so it can introduce brand-new products the catalog doesn't have yet instead of
+    // only matching what's already known (which is all the old plain-OCR importer could do).
+    fun extractOrderForm(
+        provider: VisionProvider,
+        apiKey: String,
+        model: String,
+        photo: File,
+        knownProductNames: List<String>,
+        ocrText: String = ""
+    ): OrderImportResult {
+        if (apiKey.isBlank()) return OrderImportResult.Failure("No API key set. Add one in Settings to use AI order import.")
+        return try {
+            val imageBase64 = Base64.encodeToString(photo.readBytes(), Base64.NO_WRAP)
+            val prompt = buildOrderFormPrompt(knownProductNames, ocrText)
+            val responseText = when (provider) {
+                VisionProvider.ANTHROPIC -> postToAnthropic(model, apiKey, imageBase64, prompt)
+                VisionProvider.OPENAI -> postToOpenAi(model, apiKey, imageBase64, prompt)
+            }
+            parseOrderLines(responseText)
+        } catch (e: Exception) {
+            OrderImportResult.Failure("AI order import failed: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    private fun buildOrderFormPrompt(knownProductNames: List<String>, ocrText: String): String {
+        val knownList = if (knownProductNames.isEmpty()) "none saved yet" else knownProductNames.joinToString(", ")
+        val ocrBlock = if (ocrText.isBlank()) "No text was legible on the photo." else
+            "Text an on-device OCR pass found on this form (may be partial, out of order, or noisy): \"${ocrText.take(1200)}\""
+
+        return """
+            You are helping a deli/grocery manager read a box meat / grocery order form, order guide, or order sheet photo and extract every line item they're ordering.
+            This is a printed or handwritten list of items and quantities to order (e.g. a supplier order guide, a box meat order sheet, a handwritten order list) -- NOT a shelf photo of physical inventory. Read it like a document: find each row or line, its item name or code, and its order quantity.
+            Real order forms are often imperfect: blurry, tilted, cropped, partially handwritten over printed text, or marked with checkmarks or circles instead of clean numbers. Use context (nearby printed item codes, typical case sizes, column alignment) to make your best reading, and reflect uncertainty in the confidence score instead of skipping a line.
+
+            Known products already tracked in this app: $knownList.
+            If a line genuinely IS one of the known products under a slightly different label, reuse that exact known product name. But accuracy comes first: do not force-fit to a known name just because it shares a word or category. If a line isn't one of the known products, invent a new, specific, accurate name instead -- a new product is far better than a mislabeled one.
+
+            $ocrBlock
+
+            Respond with ONLY a JSON object, no markdown fences, no commentary, in this exact shape:
+            {"items":[{"name":"string","quantity":number,"unit":"string","confidence":number,"notes":"string"}]}
+            "quantity" is the amount being ORDERED on this line, not a count of what's currently on hand. "confidence" must be an integer from 0 to 100. Use "unit" values like "boxes", "cases", "each", or "lbs" based on what the form itself specifies. Keep "notes" under 15 words explaining what you read or any uncertainty (e.g. handwriting was unclear, or you matched by item code rather than name).
+        """.trimIndent()
+    }
+
+    private fun parseOrderLines(responseText: String): OrderImportResult {
+        val jsonText = extractJsonObject(responseText) ?: return OrderImportResult.Failure("Could not parse AI response as JSON.")
+        val items = JSONObject(jsonText).optJSONArray("items") ?: JSONArray()
+        val suggestions = (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            val name = item.optString("name").ifBlank { return@mapNotNull null }
+            OrderLineSuggestion(
+                itemName = name,
+                orderedQuantity = item.optDouble("quantity", 1.0).let { if (it.isNaN()) 1.0 else it },
+                unit = item.optString("unit").ifBlank { "each" },
+                confidencePercent = parseConfidence(item.opt("confidence")),
+                notes = item.optString("notes")
+            )
+        }
+        return if (suggestions.isEmpty()) OrderImportResult.Failure("AI did not detect any order lines. Try a clearer photo or add rows manually.")
+        else OrderImportResult.Success(suggestions)
     }
 
     // ---- Anthropic -------------------------------------------------------
