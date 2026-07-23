@@ -30,6 +30,11 @@ data class Product(
     val active: Boolean = true,
     val productPhotoUri: String? = null,
     val notes: String? = null,
+    // How to tell this product apart from a photo without reading its label: box/case size,
+    // a color-coding system on the lid or wrap (e.g. "Red lid = Original, Yellow = Lemon
+    // Pepper"), how it's normally stacked, etc. Fed into the AI shelf-count prompt as a
+    // per-product hint.
+    val visualIdentifiers: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )

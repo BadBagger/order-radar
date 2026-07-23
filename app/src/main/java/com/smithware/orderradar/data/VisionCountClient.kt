@@ -31,7 +31,9 @@ data class ProductHistoryHint(
     val lastCountQuantity: Double?,
     val lastCountUnit: String?,
     val daysSinceLastCount: Int?,
-    val averageDailyUsage: Double?
+    val averageDailyUsage: Double?,
+    val storageLocation: String?,
+    val visualIdentifiers: String?
 )
 
 sealed class VisionCountResult {
@@ -81,6 +83,8 @@ object VisionCountClient {
             if (hint.lastCountQuantity != null) parts += "last counted ${hint.lastCountQuantity.clean()} ${hint.lastCountUnit.orEmpty()}".trim()
             if (hint.daysSinceLastCount != null) parts += "${hint.daysSinceLastCount} day(s) ago"
             if (hint.averageDailyUsage != null) parts += "averages ${hint.averageDailyUsage.clean()}/day"
+            if (hint.storageLocation != null) parts += "usually found at ${hint.storageLocation}"
+            if (hint.visualIdentifiers != null) parts += "visual ID: ${hint.visualIdentifiers}"
             "- ${hint.name}: ${if (parts.isEmpty()) "no prior data" else parts.joinToString(", ")}"
         }
         val ocrBlock = if (ocrText.isBlank()) "No text was legible on the photo." else
@@ -90,6 +94,9 @@ object VisionCountClient {
             You are helping a deli/grocery manager count physical inventory from a shelf or cooler photo.
             Real shelf photos are often imperfect: blurry, tilted, cropped, partially blocked by other items, or dim. Do not skip an item just because it isn't perfectly legible -- use packaging shape, color, stacking pattern, partial text, and the context below to make your best estimate, and reflect any uncertainty in the confidence score instead of leaving the item out.
             List every distinct food product you can see and estimate how many discrete units (boxes, chubs, tubs, packages, or trays) of each are visible. Do not estimate by weight.
+
+            Counting method: for products stored as identical stacked boxes/cases, you do not need to read the printed label on every box. Count distinct stacked units by their visible edges, seams, or shadow lines between boxes of the same size and color -- if you can see a stack of 4 same-size boxes at a known product's usual spot, that is a count of 4 even if only the top box's text is legible. Products are usually restocked in a consistent spot and order, so a box's position on the shelf (matched against "usually found at" below) is itself evidence of which product it is.
+            Some products are distinguished by a color-coding system on the lid or wrap rather than by printed text -- see each product's "visual ID" hint below and match by color first when one is given, since color is often more reliable than text on a blurry photo.
 
             Known products already tracked in this app: $knownList.
             If an item matches one of the known products (even loosely, e.g. "Caesar Pasta Salad" for a tub labeled "Caesar Pasta Salad Base"), reuse that exact known product name. Otherwise invent a short, clear product name.

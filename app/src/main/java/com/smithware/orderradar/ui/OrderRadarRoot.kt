@@ -524,6 +524,7 @@ private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (
     var safetyStock by remember(product) { mutableStateOf(product?.safetyStock?.clean() ?: "1") }
     var reorderPoint by remember(product) { mutableStateOf(product?.reorderPoint?.clean() ?: "1") }
     var notes by remember(product) { mutableStateOf(product?.notes ?: "") }
+    var visualIdentifiers by remember(product) { mutableStateOf(product?.visualIdentifiers ?: "") }
     Screen(if (isNew) "Add Product" else "Edit Product", "Set the product up once, then count and forecast it.", onBack = onBack) {
         OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Product name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         EnumPicker("Category", category, ProductCategory.entries) { category = it }
@@ -535,6 +536,14 @@ private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (
             OutlinedTextField(value = safetyStock, onValueChange = { safetyStock = it }, label = { Text("Safety stock") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.weight(1f))
             OutlinedTextField(value = reorderPoint, onValueChange = { reorderPoint = it }, label = { Text("Reorder point") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.weight(1f))
         }
+        OutlinedTextField(
+            value = visualIdentifiers,
+            onValueChange = { visualIdentifiers = it },
+            label = { Text("Visual ID for AI Shelf Count") },
+            placeholder = { Text("e.g. Red lid = Original, Yellow lid = Lemon Pepper. Stacked 4 per shelf.") },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth()
+        )
         OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text("Notes") }, minLines = 3, modifier = Modifier.fillMaxWidth())
         BigActionButton("Save Product", Icons.Default.Save) {
             if (name.isNotBlank()) {
@@ -551,6 +560,7 @@ private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (
                         safetyStock = safetyStock.toDoubleOrNull() ?: 0.0,
                         reorderPoint = reorderPoint.toDoubleOrNull() ?: 0.0,
                         notes = notes.ifBlank { null },
+                        visualIdentifiers = visualIdentifiers.ifBlank { null },
                         createdAt = product?.createdAt ?: now,
                         updatedAt = now,
                         itemNumber = product?.itemNumber,
