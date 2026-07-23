@@ -467,8 +467,9 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
     var queuedSources by remember { mutableStateOf<List<DeliScanSourceDraft>>(emptyList()) }
     var sessionStatus by remember { mutableStateOf(DeliExtractionStatus.QUEUED) }
     var activeSession by remember { mutableStateOf<DeliScanSession?>(null) }
+    var reviewedInventory by remember { mutableStateOf<List<DeliInventoryItem>>(emptyList()) }
     val batch = activeSession?.result
-    val result = remember(batch, today) {
+    val result = remember(batch, reviewedInventory, today) {
         if (batch == null) {
             sampleDeliReconciliation(today)
         } else {
@@ -477,7 +478,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                     today = today,
                     nextDeliveryDate = today.plusDays(3),
                     coverageWindowDays = 7,
-                    inventory = batch.inventoryItems,
+                    inventory = reviewedInventory,
                     promos = batch.promoItems,
                     orderLines = batch.orderLines
                 )
@@ -498,6 +499,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
             BigActionButton("Start New Session", Icons.Default.PlayArrow) {
                 queuedSources = emptyList()
                 activeSession = null
+                reviewedInventory = emptyList()
                 sessionStatus = DeliExtractionStatus.QUEUED
                 sourceCounter = 1
             }
@@ -544,6 +546,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                             )
                             sourceCounter += 1
                             activeSession = null
+                            reviewedInventory = emptyList()
                             sessionStatus = DeliExtractionStatus.QUEUED
                         }
                     },
@@ -567,6 +570,7 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                             nowMillis = System.currentTimeMillis()
                         )
                         activeSession = session
+                        reviewedInventory = session.result?.inventoryItems.orEmpty()
                         onSaveSession(session)
                         sessionStatus = if ((session.summary?.verifyItemCount ?: 0) > 0) {
                             DeliExtractionStatus.NEEDS_VERIFICATION
@@ -596,6 +600,34 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
         }
         SectionHeader("Parsed Batch Counts")
         DeliBatchCounts(summary, result)
+        if (batch != null) {
+            SectionHeader("Review & Correct Inventory")
+            DeliInventoryReviewSection(
+                inventory = reviewedInventory,
+                onUpdate = { index, item ->
+                    reviewedInventory = reviewedInventory.mapIndexed { itemIndex, current ->
+                        if (itemIndex == index) item else current
+                    }
+                    sessionStatus = if (reviewedInventory.any { it.needsDeliVerification() }) {
+                        DeliExtractionStatus.NEEDS_VERIFICATION
+                    } else {
+                        DeliExtractionStatus.COMPLETE
+                    }
+                },
+                onMergeGroup = { indexes ->
+                    val mergeItems = indexes.mapNotNull { reviewedInventory.getOrNull(it) }
+                    if (mergeItems.isNotEmpty()) {
+                        val merged = DeliInventoryReviewEngine.mergeGroup(mergeItems)
+                        reviewedInventory = reviewedInventory.filterIndexed { index, _ -> index !in indexes } + merged
+                        sessionStatus = if (merged.needsDeliVerification() || reviewedInventory.any { it.needsDeliVerification() }) {
+                            DeliExtractionStatus.NEEDS_VERIFICATION
+                        } else {
+                            DeliExtractionStatus.COMPLETE
+                        }
+                    }
+                }
+            )
+        }
         SectionHeader("Order Sheet")
         result.orderSheet.forEach { rec ->
             SimpleCard {
@@ -725,6 +757,169 @@ private fun DeliBatchCounts(summary: DeliScanSessionSummary?, result: DeliReconc
         }
         summary?.locationTags?.takeIf { it.isNotEmpty() }?.let { tags ->
             Text("Tags: ${tags.joinToString(", ")}", color = RadarMuted, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun DeliInventoryReviewSection(
+    inventory: List<DeliInventoryItem>,
+    onUpdate: (Int, DeliInventoryItem) -> Unit,
+    onMergeGroup: (List<Int>) -> Unit
+) {
+    if (inventory.isEmpty()) {
+        EmptyState("No parsed inventory", "Add an inventory source and build the batch before review.")
+        return
+    }
+    val grouped = inventory.withIndex()
+        .groupBy { indexed -> listOf(indexed.value.sku, indexed.value.category.name, indexed.value.location.name) }
+        .values
+        .sortedWith(
+            compareBy<List<IndexedValue<DeliInventoryItem>>> { it.first().value.category.name }
+                .thenBy { it.first().value.location.name }
+                .thenBy { it.first().value.sku }
+        )
+    grouped.forEach { group ->
+        val first = group.first().value
+        val totalCases = group.sumOf { it.value.casesOnHand }
+        val totalPounds = group.mapNotNull { indexed ->
+            indexed.value.caseWeightLbs?.let { it * indexed.value.casesOnHand }
+        }.takeIf { it.isNotEmpty() }?.sum()
+        SimpleCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("${first.sku}  ${first.category.name.readable()}", fontWeight = FontWeight.Bold)
+                    Text("${first.location.name.readable()} | ${totalCases.clean()} cases${totalPounds?.let { " | ${it.clean()} lb" } ?: ""}", color = RadarMuted)
+                }
+                if (group.size > 1) {
+                    DeliStatusPill("Merge review", active = true)
+                }
+            }
+            if (group.size > 1) {
+                Text("${group.size} matching parsed labels are grouped here. Merge only after confirming they are the same on-hand stack.", color = RadarOrange)
+                OutlinedButton(
+                    onClick = { onMergeGroup(group.map { it.index }) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.CallMerge, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Merge To ${totalCases.clean()} Cases")
+                }
+            }
+            group.forEach { indexed ->
+                DeliInventoryReviewRow(
+                    index = indexed.index,
+                    item = indexed.value,
+                    onUpdate = onUpdate
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeliInventoryReviewRow(
+    index: Int,
+    item: DeliInventoryItem,
+    onUpdate: (Int, DeliInventoryItem) -> Unit
+) {
+    var useByText by remember(item.sku, item.name, item.useByDate) { mutableStateOf(item.useByDate?.toString().orEmpty()) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { onUpdate(index, DeliInventoryReviewEngine.adjustCases(item, -0.5)) },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Remove, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("0.5")
+            }
+            Text("${item.casesOnHand.clean()} cases", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+            OutlinedButton(
+                onClick = { onUpdate(index, DeliInventoryReviewEngine.adjustCases(item, 0.5)) },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("0.5")
+            }
+        }
+        OutlinedTextField(
+            value = item.sku,
+            onValueChange = { value ->
+                onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(sku = value)))
+            },
+            label = { Text("SKU") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = item.name,
+            onValueChange = { value ->
+                onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(name = value)))
+            },
+            label = { Text("Item name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        EnumPicker("Category", item.category, DeliCategory.entries) { category ->
+            onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(category = category)))
+        }
+        EnumPicker("Location", item.location, InventoryLocation.entries) { location ->
+            onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(location = location)))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = item.caseWeightLbs?.clean().orEmpty(),
+                onValueChange = { value ->
+                    onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(caseWeightLbs = value.toDoubleOrNull())))
+                },
+                label = { Text("Weight lb/case") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = useByText,
+                onValueChange = { value ->
+                    useByText = value
+                    parseLocalDateOrNull(value)?.let { parsed ->
+                        onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(useByDate = parsed)))
+                    }
+                },
+                label = { Text("Use-by") },
+                placeholder = { Text("YYYY-MM-DD") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        OutlinedTextField(
+            value = item.brandVendor.orEmpty(),
+            onValueChange = { value ->
+                onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(brandVendor = value)))
+            },
+            label = { Text("Vendor") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            FilterChip(
+                selected = item.verified,
+                onClick = {
+                    onUpdate(index, DeliInventoryReviewEngine.applyEdit(item, DeliInventoryItemEdit(verified = !item.verified)))
+                },
+                label = { Text(if (item.verified) "Verified" else "Needs verify") },
+                leadingIcon = {
+                    Icon(
+                        if (item.verified) Icons.Default.CheckCircle else Icons.Default.Error,
+                        contentDescription = null
+                    )
+                }
+            )
+            Text("Confidence ${(item.confidence * 100).toInt()}%", color = RadarMuted, modifier = Modifier.align(Alignment.CenterVertically))
         }
     }
 }
@@ -1402,6 +1597,9 @@ private fun OrderRadarUiState.product(productId: Long) = snapshots.firstOrNull {
 
 private fun String.readable(): String = lowercase().split("_").joinToString(" ") { it.replaceFirstChar { char -> char.uppercase() } }
 private fun Long.shortDate(): String = SimpleDateFormat("MMM d", Locale.US).format(Date(this))
+private fun parseLocalDateOrNull(value: String): LocalDate? = runCatching { LocalDate.parse(value.trim()) }.getOrNull()
+private fun DeliInventoryItem.needsDeliVerification(): Boolean =
+    !verified || confidence < 0.80 || sku.startsWith("UNKNOWN-", ignoreCase = true)
 
 private fun buildReport(state: OrderRadarUiState): String {
     val orderLines = state.forecasts.filter { it.recommendedOrderQuantity > 0.0 }.joinToString("\n") { forecast ->

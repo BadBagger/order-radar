@@ -20,7 +20,7 @@ object DeliReconciliationEngine {
     fun reconcile(request: DeliReconciliationRequest): DeliReconciliationResult {
         val groupedInventory = request.inventory.groupBy { it.sku.normalizedSku() }
         val verifyList = request.inventory
-            .filter { !it.verified && it.confidence < request.confidenceThreshold }
+            .filter { it.needsVerification(request.confidenceThreshold) }
             .sortedWith(compareBy<DeliInventoryItem> { it.sku }.thenBy { it.name })
 
         val expiryRadar = buildExpiryRadar(request.inventory, request.today)
@@ -32,7 +32,7 @@ object DeliReconciliationEngine {
                 val sku = line.sku.normalizedSku()
                 val inventory = groupedInventory[sku].orEmpty()
                 val confidence = inventory.minOfOrNull { it.confidence } ?: 1.0
-                val lowConfidence = inventory.any { !it.verified && it.confidence < request.confidenceThreshold }
+                val lowConfidence = inventory.any { it.needsVerification(request.confidenceThreshold) }
                 val expiringCases = inventory.sumOf { item ->
                     if (isExcludedFromCoverage(item, request.today, request.nextDeliveryDate)) item.casesOnHand else 0.0
                 }
@@ -196,4 +196,7 @@ private fun PromoItem.multiplier(): Double =
     expectedDemandMultiplier ?: DeliPromoDefaults.multiplierFor(dealType, discountPct)
 
 private fun String.normalizedSku(): String = trim().uppercase()
+
+private fun DeliInventoryItem.needsVerification(confidenceThreshold: Double): Boolean =
+    !verified || confidence < confidenceThreshold || sku.startsWith("UNKNOWN-", ignoreCase = true)
 
