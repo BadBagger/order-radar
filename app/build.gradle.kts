@@ -25,8 +25,8 @@ android {
         applicationId = "com.smithware.orderradar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.6.1-box-stacking-color-id"
+        versionCode = 14
+        versionName = "0.6.2-grouped-visual-context"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
