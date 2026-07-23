@@ -25,8 +25,8 @@ android {
         applicationId = "com.smithware.orderradar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 20
-        versionName = "0.7.2-item-number-id"
+        versionCode = 21
+        versionName = "0.8.0-multi-photo-count"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
