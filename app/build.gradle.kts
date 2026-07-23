@@ -25,8 +25,8 @@ android {
         applicationId = "com.smithware.orderradar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 21
-        versionName = "0.8.0-multi-photo-count"
+        versionCode = 22
+        versionName = "0.8.1-ollama-compare"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
