@@ -123,11 +123,9 @@ object DeliTextExtractionParser {
 
     fun parseOrderScreenLines(text: String): List<SupplierOrderLine> =
         text.lines().mapIndexedNotNull { index, line ->
+            parsePublixOrderReviewLine(line, index)?.let { return@mapIndexedNotNull it }
             val sku = findSku(line) ?: return@mapIndexedNotNull null
-            val suggested = Regex("""(?:suggested|sugg|sys)\D*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
-                .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
-                ?: Regex("""\bqty\D*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE).find(line)?.groupValues?.get(1)?.toDoubleOrNull()
-                ?: 0.0
+            val suggested = findLabeledQuantity(line) ?: 0.0
             SupplierOrderLine(
                 sku = sku,
                 name = line.cleanLineName(sku),
@@ -144,6 +142,41 @@ object DeliTextExtractionParser {
             .map { it.trim() }
             .filter { it.contains("add", true) || it.contains("extra", true) || it.contains("note", true) || it.contains("please", true) }
 }
+
+private fun parsePublixOrderReviewLine(line: String, index: Int): SupplierOrderLine? {
+    val match = publixOrderRowRegex.find(line.trim()) ?: return null
+    val sku = match.groupValues[1]
+    val name = match.groupValues[2].cleanOrderDescription()
+    val packSize = match.groupValues[3].replace(Regex("""\s+"""), " ").trim()
+    val numericTail = match.groupValues[4]
+    val suggested = firstQuantityAfterPack(numericTail)
+    return SupplierOrderLine(
+        sku = sku,
+        name = name,
+        packSize = packSize,
+        suggestedCases = suggested,
+        forecastDemandCases = suggested,
+        safetyStockCases = 1.0,
+        orderIndex = index
+    )
+}
+
+private val publixOrderRowRegex = Regex(
+    """^\s*(\d{6,8})\s*[-–]\s*(.+?)\s+((?:\d+(?:\.\d+)?\s*/\s*)?\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|EA|EACH|SC|CT)\b)\s*(.*)$""",
+    RegexOption.IGNORE_CASE
+)
+
+private fun firstQuantityAfterPack(tail: String): Double =
+    Regex("""(?<![\w.])\d+(?:\.\d+)?(?![\w.])""")
+        .findAll(tail)
+        .mapNotNull { it.value.toDoubleOrNull() }
+        .firstOrNull()
+        ?: 0.0
+
+private fun findLabeledQuantity(line: String): Double? =
+    Regex("""(?:suggested|sugg|sys|final|revised)\D*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
+        .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
+        ?: Regex("""\bqty\D*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE).find(line)?.groupValues?.get(1)?.toDoubleOrNull()
 
 private fun findSku(line: String): String? =
     Regex("""(?:sku|item)\s*[:#]?\s*([A-Za-z0-9-]{3,})""", RegexOption.IGNORE_CASE)
@@ -213,3 +246,8 @@ private fun String.cleanLineName(sku: String): String =
         .replace(Regex("""\s+"""), " ")
         .trim(' ', '-', '|', ',')
         .ifBlank { "Unknown item $sku" }
+
+private fun String.cleanOrderDescription(): String =
+    replace(Regex("""\s+"""), " ")
+        .trim(' ', '-', '|', ',')
+        .ifBlank { "Unknown order item" }

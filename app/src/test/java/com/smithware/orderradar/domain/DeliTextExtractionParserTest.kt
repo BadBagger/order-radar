@@ -46,5 +46,47 @@ class DeliTextExtractionParserTest {
         assertEquals(2.0, lines.first().suggestedCases, 0.001)
         assertTrue(lines.first().packSize?.contains("6ct") == true)
     }
+
+    @Test
+    fun parsesPublixOrderReviewRowsFromScreenPhotos() {
+        val text = """
+            0080704 - PBX DELI SWISS (2) 18.18 LB 1 0 WK
+            0075034 - FRYER CHICKEN TENDERLOIN 20 LB 4 6 6 WK
+            0100567 - CHICKEN WINGS HOT & SPICY 20 LB 3 6 6
+            0332094 - SOUP CHICKEN NOODLE 4 / 4 LB
+            0927214 - ASIAGO SUN TOM SALAD KIT 4 / 12.5 OZ
+            0344054 - KRINOS LONG STEM ARTICHOK 6 / 5.3 LB
+        """.trimIndent()
+
+        val lines = DeliTextExtractionParser.parseOrderScreenLines(text)
+
+        assertEquals(
+            listOf("0080704", "0075034", "0100567", "0332094", "0927214", "0344054"),
+            lines.map { it.sku }
+        )
+        assertEquals("PBX DELI SWISS (2)", lines[0].name)
+        assertEquals("18.18 LB", lines[0].packSize)
+        assertEquals(1.0, lines[0].suggestedCases, 0.001)
+        assertEquals("FRYER CHICKEN TENDERLOIN", lines[1].name)
+        assertEquals(4.0, lines[1].suggestedCases, 0.001)
+        assertEquals(3.0, lines[2].suggestedCases, 0.001)
+        assertEquals("4 / 4 LB", lines[3].packSize)
+        assertEquals(0.0, lines[3].suggestedCases, 0.001)
+        assertEquals("4 / 12.5 OZ", lines[4].packSize)
+        assertEquals("6 / 5.3 LB", lines[5].packSize)
+    }
+
+    @Test
+    fun capturesHandwrittenExtraNotesFromOrderPhotoText() {
+        val notes = DeliTextExtractionParser.parseStickyNotes(
+            """
+            please add
+            8 extra
+            CHICKEN WINGS PLAIN
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("please add", "8 extra"), notes)
+    }
 }
 
