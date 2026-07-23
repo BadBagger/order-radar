@@ -28,6 +28,7 @@ data class VisionCountSuggestion(
 // (e.g. a count of 12 is probably a misread if this product has never had more than 2 on hand).
 data class ProductHistoryHint(
     val name: String,
+    val category: String,
     val lastCountQuantity: Double?,
     val lastCountUnit: String?,
     val daysSinceLastCount: Int?,
@@ -78,15 +79,24 @@ object VisionCountClient {
 
     private fun buildPrompt(knownProductNames: List<String>, ocrText: String, historyHints: List<ProductHistoryHint>): String {
         val knownList = if (knownProductNames.isEmpty()) "none saved yet" else knownProductNames.joinToString(", ")
-        val historyBlock = if (historyHints.isEmpty()) "No count history yet." else historyHints.joinToString("\n") { hint ->
-            val parts = mutableListOf<String>()
-            if (hint.lastCountQuantity != null) parts += "last counted ${hint.lastCountQuantity.clean()} ${hint.lastCountUnit.orEmpty()}".trim()
-            if (hint.daysSinceLastCount != null) parts += "${hint.daysSinceLastCount} day(s) ago"
-            if (hint.averageDailyUsage != null) parts += "averages ${hint.averageDailyUsage.clean()}/day"
-            if (hint.storageLocation != null) parts += "usually found at ${hint.storageLocation}"
-            if (hint.visualIdentifiers != null) parts += "visual ID: ${hint.visualIdentifiers}"
-            "- ${hint.name}: ${if (parts.isEmpty()) "no prior data" else parts.joinToString(", ")}"
-        }
+        // Grouped by category so visually-similar products (e.g. a store's whole wings/tenders
+        // lineup) sit next to each other -- this is a comparison reference, not a claim that
+        // every item in a group will appear in the same photo. Seeing the distinguishing clue
+        // for one item (a handle, a color swatch, a box shape) next to its near-lookalikes is
+        // what lets the model rule those lookalikes out even when only one item is in frame.
+        val historyBlock = if (historyHints.isEmpty()) "No count history yet." else
+            historyHints.groupBy { it.category }.entries.joinToString("\n\n") { (category, hints) ->
+                val lines = hints.joinToString("\n") { hint ->
+                    val parts = mutableListOf<String>()
+                    if (hint.lastCountQuantity != null) parts += "last counted ${hint.lastCountQuantity.clean()} ${hint.lastCountUnit.orEmpty()}".trim()
+                    if (hint.daysSinceLastCount != null) parts += "${hint.daysSinceLastCount} day(s) ago"
+                    if (hint.averageDailyUsage != null) parts += "averages ${hint.averageDailyUsage.clean()}/day"
+                    if (hint.storageLocation != null) parts += "usually found at ${hint.storageLocation}"
+                    if (hint.visualIdentifiers != null) parts += "visual ID: ${hint.visualIdentifiers}"
+                    "- ${hint.name}: ${if (parts.isEmpty()) "no prior data" else parts.joinToString(", ")}"
+                }
+                "$category:\n$lines"
+            }
         val ocrBlock = if (ocrText.isBlank()) "No text was legible on the photo." else
             "Text an on-device OCR pass found on labels/signage in this photo (may be partial, out of order, or noisy): \"${ocrText.take(800)}\""
 
@@ -101,7 +111,7 @@ object VisionCountClient {
             Known products already tracked in this app: $knownList.
             If an item matches one of the known products (even loosely, e.g. "Caesar Pasta Salad" for a tub labeled "Caesar Pasta Salad Base"), reuse that exact known product name. Otherwise invent a short, clear product name.
 
-            Recent count/usage history for known products (use it to sanity-check an estimate that seems off -- e.g. if a product rarely has more than 2 on hand, a photo estimate of 12 is probably a miscount, not a restock):
+            Recent count/usage history for known products, grouped by category (use it to sanity-check an estimate that seems off -- e.g. if a product rarely has more than 2 on hand, a photo estimate of 12 is probably a miscount, not a restock). Products in the same category are often visually similar, so use one item's distinguishing clue (a handle, a color swatch, a box shape) to rule out its near-lookalikes in that same group, even if the photo only shows one of them -- this is a reference list, not a claim that every item in a group appears in every photo:
             $historyBlock
 
             $ocrBlock

@@ -100,6 +100,7 @@ fun PhotoVisionCountScreen(
             val daysSince = snapshot.latestCount?.let { ((System.currentTimeMillis() - it.countDate) / 86_400_000L).toInt() }
             ProductHistoryHint(
                 name = snapshot.product.name,
+                category = snapshot.product.category.name.lowercase().split("_").joinToString(" ") { it.replaceFirstChar(Char::uppercase) },
                 lastCountQuantity = snapshot.latestCount?.quantity,
                 lastCountUnit = snapshot.latestCount?.unit,
                 daysSinceLastCount = daysSince,
