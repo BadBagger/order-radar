@@ -74,22 +74,27 @@ object VisionCountClient {
     private const val ANTHROPIC_VERSION = "2023-06-01"
     private const val OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
+    // photos supports covering a shelf too wide for one frame: pass them in the order they were
+    // taken (left-to-right or however the manager walked the shelf) and the model reasons about
+    // all of them together in one call, so it can recognize a box repeated across two overlapping
+    // photos instead of counting it twice.
     fun countShelfPhoto(
         provider: VisionProvider,
         apiKey: String,
         model: String,
-        photo: File,
+        photos: List<File>,
         knownProductNames: List<String>,
         ocrText: String = "",
         historyHints: List<ProductHistoryHint> = emptyList()
     ): VisionCountResult {
         if (apiKey.isBlank()) return VisionCountResult.Failure("No API key set. Add one in Settings to use AI shelf counting.")
+        if (photos.isEmpty()) return VisionCountResult.Failure("No photo to analyze.")
         return try {
-            val imageBase64 = Base64.encodeToString(photo.readBytes(), Base64.NO_WRAP)
-            val prompt = buildPrompt(knownProductNames, ocrText, historyHints)
+            val imagesBase64 = photos.map { Base64.encodeToString(it.readBytes(), Base64.NO_WRAP) }
+            val prompt = buildPrompt(knownProductNames, ocrText, historyHints, imagesBase64.size)
             val responseText = when (provider) {
-                VisionProvider.ANTHROPIC -> postToAnthropic(model, apiKey, imageBase64, prompt)
-                VisionProvider.OPENAI -> postToOpenAi(model, apiKey, imageBase64, prompt)
+                VisionProvider.ANTHROPIC -> postToAnthropic(model, apiKey, imagesBase64, prompt)
+                VisionProvider.OPENAI -> postToOpenAi(model, apiKey, imagesBase64, prompt)
             }
             parseSuggestions(responseText)
         } catch (e: Exception) {
@@ -97,7 +102,7 @@ object VisionCountClient {
         }
     }
 
-    private fun buildPrompt(knownProductNames: List<String>, ocrText: String, historyHints: List<ProductHistoryHint>): String {
+    private fun buildPrompt(knownProductNames: List<String>, ocrText: String, historyHints: List<ProductHistoryHint>, photoCount: Int): String {
         val knownList = if (knownProductNames.isEmpty()) "none saved yet" else knownProductNames.joinToString(", ")
         // Grouped by category so visually-similar products (e.g. a store's whole wings/tenders
         // lineup) sit next to each other -- this is a comparison reference, not a claim that
@@ -121,10 +126,15 @@ object VisionCountClient {
         val ocrBlock = if (ocrText.isBlank()) "No text was legible on the photo." else
             "Text an on-device OCR pass found on labels/signage in this photo (may be partial, out of order, or noisy): \"${ocrText.take(800)}\""
 
+        val multiPhotoBlock = if (photoCount > 1) """
+
+            Multiple photos: you were given $photoCount photos of this shelf/cooler, taken in order to cover an area too wide for one frame -- treat them as one continuous space, not $photoCount separate counts to add up. Consecutive photos likely overlap at their edges, so the same physical box can appear in more than one photo. Before finalizing a product's total, check whether items near the edge of one photo reappear near the edge of the next (matching item #, position, or arrangement) -- if so, that is the SAME box and must be counted only once in the total, not once per photo it appears in.
+        """.trimIndent() else ""
+
         return """
             You are helping a deli/grocery manager count physical inventory from a shelf or cooler photo.
             Real shelf photos are often imperfect: blurry, tilted, cropped, partially blocked by other items, or dim. Do not skip an item just because it isn't perfectly legible -- use packaging shape, color, stacking pattern, partial text, and the context below to make your best estimate, and reflect any uncertainty in the confidence scores instead of leaving the item out.
-            List every distinct food product you can see and estimate how many discrete units (boxes, chubs, tubs, packages, or trays) of each are visible. Do not estimate by weight.
+            List every DISTINCT product you can see -- one row per product, with the TOTAL count of every unit of that product anywhere in view. This means: scan the entire visible area first (every shelf, every stack, every box scattered around, not just the first one you notice), then add up every instance of the same product into a single row. Never emit more than one row for the same product just because you can read its label on several separate boxes -- if you see the same item # or name on 5 different boxes across the shelf, that is one row with quantity 5, not five rows of quantity 1 each.$multiPhotoBlock
 
             Identification method -- do this deliberately, not as a guess: before naming an item, cross-check as many of these signals as are available and let them corroborate or contradict each other:
             1. A printed "item #" or case code on the box, if legible (even partially) -- match it against the "item #" listed for each known product below. This is usually the single most reliable signal on a case of otherwise-identical-looking boxes, since many vendors print an exact code but not a full readable product name.
@@ -134,7 +144,7 @@ object VisionCountClient {
             5. Shelf position -- products are usually restocked to a consistent spot, so a box's location matched against "usually found at" below is itself evidence of which product it is.
             The more of these signals agree, the higher identificationConfidence should be. If you can read an item # clearly and it matches a known product, that alone should give high confidence even without the other signals. If you're naming something off one weak signal alone (e.g. only a vague box shape, nothing else corroborating), keep identificationConfidence low even if you're sure about the count. If you can read a code but it does NOT match any known product's item #, say so in "notes" and lean toward proposing a new product named after that code rather than force-fitting a known one.
 
-            Counting method: for products stored as identical stacked boxes/cases, you do not need to read the printed label on every box. Count distinct stacked units by their visible edges, seams, or shadow lines between boxes of the same size and color -- if you can see a stack of 4 same-size boxes, that is a count of 4 even if only the top box's text is legible. countConfidence is about the NUMBER specifically -- how cleanly you could see and count the stack given photo quality and occlusion -- and is independent of identificationConfidence: you can be very sure something is Original Rotisserie Chicken but unsure if there are 3 or 4 boxes, or sure there are 4 boxes of something but unsure which flavor.
+            Counting method: for products stored as identical boxes/cases -- whether stacked, side by side, or scattered across a shelf -- you do not need to read the printed label on every single box. Count every distinct unit by its visible edges, seams, or shadow lines between boxes of the same size and color, then sum them into that product's one total. If you can see 4 same-size boxes of the same product anywhere in the photo(s), that is a count of 4 even if only one box's text is fully legible. countConfidence is about the NUMBER specifically -- how cleanly you could see and count every instance given photo quality and occlusion -- and is independent of identificationConfidence: you can be very sure something is Original Rotisserie Chicken but unsure if there are 3 or 4 boxes, or sure there are 4 boxes of something but unsure which flavor.
 
             Known products already tracked in this app: $knownList.
             If an item genuinely IS one of the known products under a slightly different label (e.g. "Caesar Pasta Salad" for a tub printed "Caesar Pasta Salad Base" -- same product, just a shorter name), reuse that exact known product name. But accuracy comes first: do not force-fit to a known name just because it shares one word or a general category (e.g. do not call a whole rotisserie chicken "Chicken Breast Box" just because both involve chicken -- those are different products). If none of the known products are actually what you're looking at, invent a new, specific, accurate name instead -- a new product is far better than a mislabeled one.
@@ -167,8 +177,8 @@ object VisionCountClient {
             val imageBase64 = Base64.encodeToString(photo.readBytes(), Base64.NO_WRAP)
             val prompt = buildOrderFormPrompt(knownProductNames, ocrText)
             val responseText = when (provider) {
-                VisionProvider.ANTHROPIC -> postToAnthropic(model, apiKey, imageBase64, prompt)
-                VisionProvider.OPENAI -> postToOpenAi(model, apiKey, imageBase64, prompt)
+                VisionProvider.ANTHROPIC -> postToAnthropic(model, apiKey, listOf(imageBase64), prompt)
+                VisionProvider.OPENAI -> postToOpenAi(model, apiKey, listOf(imageBase64), prompt)
             }
             parseOrderLines(responseText)
         } catch (e: Exception) {
@@ -217,17 +227,20 @@ object VisionCountClient {
 
     // ---- Anthropic -------------------------------------------------------
 
-    private fun postToAnthropic(model: String, apiKey: String, imageBase64: String, prompt: String): String {
+    private fun postToAnthropic(model: String, apiKey: String, images: List<String>, prompt: String): String {
         val content = JSONArray()
-            .put(
+        images.forEachIndexed { index, imageBase64 ->
+            if (images.size > 1) content.put(JSONObject().put("type", "text").put("text", "Photo ${index + 1} of ${images.size}:"))
+            content.put(
                 JSONObject()
                     .put("type", "image")
                     .put("source", JSONObject().put("type", "base64").put("media_type", "image/jpeg").put("data", imageBase64))
             )
-            .put(JSONObject().put("type", "text").put("text", prompt))
+        }
+        content.put(JSONObject().put("type", "text").put("text", prompt))
         val requestBody = JSONObject()
             .put("model", model)
-            .put("max_tokens", 1536)
+            .put("max_tokens", 2048)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
             .toString()
 
@@ -259,13 +272,16 @@ object VisionCountClient {
 
     // ---- OpenAI -----------------------------------------------------------
 
-    private fun postToOpenAi(model: String, apiKey: String, imageBase64: String, prompt: String): String {
+    private fun postToOpenAi(model: String, apiKey: String, images: List<String>, prompt: String): String {
         val content = JSONArray()
-            .put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$imageBase64")))
-            .put(JSONObject().put("type", "text").put("text", prompt))
+        images.forEachIndexed { index, imageBase64 ->
+            if (images.size > 1) content.put(JSONObject().put("type", "text").put("text", "Photo ${index + 1} of ${images.size}:"))
+            content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$imageBase64")))
+        }
+        content.put(JSONObject().put("type", "text").put("text", prompt))
         val requestBody = JSONObject()
             .put("model", model)
-            .put("max_tokens", 1536)
+            .put("max_tokens", 2048)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
             .toString()
 

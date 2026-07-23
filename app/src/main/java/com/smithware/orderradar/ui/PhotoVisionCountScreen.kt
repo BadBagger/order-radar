@@ -17,12 +17,15 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
@@ -65,6 +68,7 @@ import com.smithware.orderradar.ui.theme.RadarOrange
 import com.smithware.orderradar.ui.theme.RadarText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -121,27 +125,44 @@ fun PhotoVisionCountScreen(
     }
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
-    var capturedPath by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf("Take a wide, well-lit photo of the shelf or cooler you want to count, or choose one from your gallery. Blurry or angled photos are fine -- do your best and adjust low-confidence rows after.") }
+    // Photos captured/picked for this count, in the order they were taken -- lets a wide shelf
+    // be covered by several shots instead of one, and are sent together in a single AI call.
+    var photos by remember { mutableStateOf<List<String>>(emptyList()) }
+    var status by remember { mutableStateOf("Take a wide, well-lit photo of the shelf or cooler you want to count, or choose one or more from your gallery. If it doesn't fit in one frame, add more photos -- the AI reasons about them together and won't double-count overlapping edges.") }
     var isLoading by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     var rows by remember { mutableStateOf<List<VisionSuggestionRow>>(emptyList()) }
 
-    // Shared by both the camera-capture and gallery paths, so a picked photo gets the exact
-    // same AI-count treatment as a freshly-captured one. ocrText comes from an on-device ML Kit
-    // pass so the vision call combines OCR, image understanding, and count history instead of
-    // leaning on any one signal alone.
-    fun runVisionCount(file: File, ocrText: String) {
-        capturedPath = file.absolutePath
+    suspend fun ocrText(file: File): String = suspendCancellableCoroutine { cont ->
+        try {
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val image = InputImage.fromFilePath(context, Uri.fromFile(file))
+            recognizer.process(image)
+                .addOnSuccessListener { result -> if (cont.isActive) cont.resumeWith(Result.success(result.text)) }
+                .addOnFailureListener { if (cont.isActive) cont.resumeWith(Result.success("")) }
+        } catch (e: Exception) {
+            if (cont.isActive) cont.resumeWith(Result.success(""))
+        }
+    }
+
+    // Runs once the manager taps "Run AI Count" on the whole batch of photos. OCR runs per photo
+    // first purely as extra context handed to the AI alongside the images themselves.
+    fun runVisionCount() {
+        if (photos.isEmpty()) return
         if (apiKey.isBlank()) {
             status = "No API key set. Add rows manually below or set a key in Settings."
             return
         }
         isLoading = true
-        status = "Asking AI to count what's visible..."
+        status = if (photos.size > 1) "Reading text and asking AI to count across ${photos.size} photos..." else "Asking AI to count what's visible..."
         scope.launch {
+            val files = photos.map { File(it) }
+            val combinedOcr = files.mapIndexed { index, file ->
+                val text = withContext(Dispatchers.IO) { ocrText(file) }
+                "Photo ${index + 1}: ${text.ifBlank { "(no legible text)" }}"
+            }.joinToString("\n\n")
             val result = withContext(Dispatchers.IO) {
-                VisionCountClient.countShelfPhoto(provider, apiKey, model, file, products.map { it.name }, ocrText, historyHints)
+                VisionCountClient.countShelfPhoto(provider, apiKey, model, files, products.map { it.name }, combinedOcr, historyHints)
             }
             isLoading = false
             when (result) {
@@ -171,25 +192,19 @@ fun PhotoVisionCountScreen(
         }
     }
 
-    fun readTextThenCount(file: File) {
-        status = "Reading text on the photo..."
-        try {
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            val image = InputImage.fromFilePath(context, Uri.fromFile(file))
-            recognizer.process(image)
-                .addOnSuccessListener { result -> runVisionCount(file, result.text) }
-                .addOnFailureListener { runVisionCount(file, "") }
-        } catch (e: Exception) {
-            runVisionCount(file, "")
-        }
+    fun addPhoto(file: File) {
+        photos = photos + file.absolutePath
+        status = "Added photo ${photos.size}. Add another to cover more of the shelf, or run AI Count."
     }
 
-    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val file = createPhotoFile(context.filesDir)
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris: List<Uri> ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
         try {
-            context.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
-            readTextThenCount(file)
+            uris.forEach { uri ->
+                val file = createPhotoFile(context.filesDir)
+                context.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
+                addPhoto(file)
+            }
         } catch (e: Exception) {
             status = "Could not read that photo: ${e.message ?: "unknown error"}"
         }
@@ -215,7 +230,7 @@ fun PhotoVisionCountScreen(
         }
         item {
             val providerLabel = if (provider == VisionProvider.OPENAI) "OpenAI's" else "Anthropic's"
-            WarningPanel("This sends the photo you capture to $providerLabel API for counting. Nothing is saved until you review and confirm each row.")
+            WarningPanel("This sends the photo(s) you capture to $providerLabel API for counting. Nothing is saved until you review and confirm each row.")
         }
         if (apiKey.isBlank()) {
             item {
@@ -228,41 +243,53 @@ fun PhotoVisionCountScreen(
                 }
             }
         }
-        item {
-            if (!hasPermission) {
-                AssistCard {
-                    Text("Camera permission needed", fontWeight = FontWeight.Bold)
-                    Text("Order Radar uses the camera locally to capture the shelf photo.", color = RadarMuted)
-                    Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }, colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal)) {
-                        Text("Allow Camera")
+        if (rows.isEmpty()) {
+            item {
+                if (!hasPermission) {
+                    AssistCard {
+                        Text("Camera permission needed", fontWeight = FontWeight.Bold)
+                        Text("Order Radar uses the camera locally to capture the shelf photo.", color = RadarMuted)
+                        Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }, colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal)) {
+                            Text("Allow Camera")
+                        }
                     }
-                }
-            } else if (capturedPath == null) {
-                val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
-                LaunchedEffect(previewView) {
-                    try {
-                        val provider = ProcessCameraProvider.getInstance(context).get()
-                        val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
-                        val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build()
-                        provider.unbindAll()
-                        provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
-                        imageCapture = capture
-                        cameraError = null
-                    } catch (_: Exception) {
-                        cameraError = "Camera preview is unavailable. Manual entry is still available."
-                    }
-                }
-                if (cameraError == null) {
-                    AndroidView(factory = { previewView }, modifier = Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(8.dp)))
                 } else {
-                    AssistCard { Text(cameraError.orEmpty(), color = RadarOrange, fontWeight = FontWeight.SemiBold) }
+                    val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
+                    LaunchedEffect(previewView) {
+                        try {
+                            val cameraProvider = ProcessCameraProvider.getInstance(context).get()
+                            val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                            val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build()
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+                            imageCapture = capture
+                            cameraError = null
+                        } catch (_: Exception) {
+                            cameraError = "Camera preview is unavailable. Manual entry is still available."
+                        }
+                    }
+                    if (cameraError == null) {
+                        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(8.dp)))
+                    } else {
+                        AssistCard { Text(cameraError.orEmpty(), color = RadarOrange, fontWeight = FontWeight.SemiBold) }
+                    }
                 }
-            } else {
-                CapturedImage(capturedPath)
             }
         }
-        item {
-            if (capturedPath == null) {
+        if (photos.isNotEmpty() && rows.isEmpty()) {
+            item {
+                Text("Photos (${photos.size})", color = RadarLime, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    itemsIndexed(photos) { index, path ->
+                        PhotoThumbnail(path) { photos = photos.toMutableList().also { it.removeAt(index) } }
+                    }
+                }
+            }
+        }
+        if (rows.isEmpty()) {
+            item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
                         onClick = {
@@ -272,7 +299,7 @@ fun PhotoVisionCountScreen(
                                 mainExecutor,
                                 object : ImageCapture.OnImageSavedCallback {
                                     override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                                        readTextThenCount(file)
+                                        addPhoto(file)
                                     }
 
                                     override fun onError(exception: ImageCaptureException) {
@@ -287,7 +314,7 @@ fun PhotoVisionCountScreen(
                     ) {
                         Icon(Icons.Default.PhotoCamera, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Capture Shelf Photo", fontWeight = FontWeight.Bold)
+                        Text(if (photos.isEmpty()) "Capture Shelf Photo" else "Capture Another Photo", fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
                         onClick = { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
@@ -296,15 +323,30 @@ fun PhotoVisionCountScreen(
                     ) {
                         Icon(Icons.Default.PhotoLibrary, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Choose from Gallery", fontWeight = FontWeight.Bold)
+                        Text("Choose from Gallery (pick multiple)", fontWeight = FontWeight.Bold)
+                    }
+                    if (photos.isNotEmpty()) {
+                        Button(
+                            onClick = { runVisionCount() },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                            enabled = !isLoading,
+                            colors = ButtonDefaults.buttonColors(containerColor = RadarLime, contentColor = RadarCharcoal),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Run AI Count (${photos.size} photo${if (photos.size > 1) "s" else ""})", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
-            } else {
+            }
+        } else {
+            item {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(onClick = {
-                        capturedPath = null
+                        photos = emptyList()
                         rows = emptyList()
-                        status = "Take a wide, well-lit photo of the shelf or cooler you want to count."
+                        status = "Take a wide, well-lit photo of the shelf or cooler you want to count, or choose one or more from your gallery."
                     }, modifier = Modifier.weight(1f)) {
                         Icon(Icons.Default.Refresh, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
@@ -318,7 +360,7 @@ fun PhotoVisionCountScreen(
                                 VisionCountRow(row.suggestion, matchedProduct, quantity)
                             }
                             if (confirmed.isNotEmpty()) {
-                                onSaveCounts(confirmed, capturedPath)
+                                onSaveCounts(confirmed, photos.firstOrNull())
                                 onBack()
                             }
                         },
@@ -445,16 +487,24 @@ private fun ConfidenceBadge(label: String, percent: Int, color: Color) {
 }
 
 @Composable
-private fun CapturedImage(path: String?) {
-    val bitmap = remember(path) { path?.let { BitmapFactory.decodeFile(it) } }
-    Box(
-        modifier = Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(8.dp)).background(RadarCard),
-        contentAlignment = Alignment.Center
-    ) {
-        if (bitmap != null) {
-            Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Captured shelf photo", modifier = Modifier.fillMaxSize())
-        } else {
-            Text("Captured shelf photo", color = RadarMuted)
+private fun PhotoThumbnail(path: String, onRemove: () -> Unit) {
+    val bitmap = remember(path) { BitmapFactory.decodeFile(path) }
+    Box(modifier = Modifier.size(90.dp)) {
+        Box(
+            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)).background(RadarCard),
+            contentAlignment = Alignment.Center
+        ) {
+            if (bitmap != null) {
+                Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.fillMaxSize())
+            } else {
+                Text("Photo", color = RadarMuted, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        IconButton(
+            onClick = onRemove,
+            modifier = Modifier.align(Alignment.TopEnd).size(24.dp).background(RadarCharcoal.copy(alpha = 0.7f), RoundedCornerShape(50))
+        ) {
+            Icon(Icons.Default.Close, contentDescription = "Remove photo", tint = RadarText, modifier = Modifier.size(16.dp))
         }
     }
 }
@@ -475,7 +525,7 @@ private fun WarningPanel(text: String) {
 
 private fun createPhotoFile(filesDir: File): File {
     val dir = File(filesDir, "order-radar-vision-photos").apply { mkdirs() }
-    return File(dir, "vision-photo-${System.currentTimeMillis()}.jpg")
+    return File(dir, "vision-photo-${System.currentTimeMillis()}-${(0..9999).random()}.jpg")
 }
 
 // Deliberately conservative: a single shared word (e.g. "chicken") is not enough to confidently
