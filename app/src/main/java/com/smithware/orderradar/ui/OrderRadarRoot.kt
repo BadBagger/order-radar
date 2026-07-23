@@ -28,6 +28,7 @@ import com.smithware.orderradar.data.*
 import com.smithware.orderradar.domain.*
 import com.smithware.orderradar.ui.theme.*
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.Date
 import java.util.Locale
 import kotlin.math.max
@@ -36,6 +37,7 @@ private enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Default.Home),
     Count("Count", Icons.Default.CheckBox),
     Orders("Orders", Icons.Default.Assignment),
+    Deli("Deli", Icons.Default.Restaurant),
     Displays("Displays", Icons.Default.Storefront),
     Reports("Reports", Icons.Default.Assessment)
 }
@@ -131,6 +133,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onAddForecast = vm::addForecastToDraft,
                     onUpdateDelivery = vm::updateDeliveryActual
                 )
+                tab == Tab.Deli -> DeliWorkflowScreen()
                 tab == Tab.Displays -> DisplaysScreen(state)
                 tab == Tab.Reports -> ReportsScreen(
                     state,
@@ -451,6 +454,55 @@ private fun ReportsScreen(
         }
         BigActionButton("Copy Report", Icons.Default.ContentCopy) { clipboard.setText(AnnotatedString(report)) }
         SettingsSection(settings, onSetVisionProvider, onSaveAnthropicVisionSettings, onSaveOpenAiVisionSettings, onSaveOllamaSettings)
+    }
+}
+
+@Composable
+private fun DeliWorkflowScreen() {
+    val today = LocalDate.now()
+    val result = remember(today) { sampleDeliReconciliation(today) }
+    Screen("Deli Order Radar", "Backstock, ad lift, expiry, and supplier-order review.") {
+        SectionHeader("Order Sheet")
+        result.orderSheet.forEach { rec ->
+            SimpleCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${rec.sku}  ${rec.itemName}", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("System ${rec.systemSuggestedCases.clean()} -> Radar ${rec.radarRecommendedCases.clean()} cases (${rec.deltaCases.clean()})", color = RadarText)
+                        Text(rec.reason, color = RadarMuted)
+                    }
+                    DeliActionChip(rec.action)
+                }
+            }
+        }
+
+        SectionHeader("Expiry Radar")
+        result.expiryRadar.filter { it.bucket != ExpiryBucket.LATER }.forEach { item ->
+            SimpleCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(item.itemName, fontWeight = FontWeight.SemiBold)
+                        Text("${item.cases.clean()} cases${item.pounds?.let { " | ${it.clean()} lb" } ?: ""} | ${item.location.name.readable()}", color = RadarMuted)
+                        Text("Use by ${item.useByDate ?: "unknown"} | ${item.daysUntilExpiry?.let { if (it <= 0) "expires today" else "expires in $it day(s)" } ?: "date unreadable"}", color = RadarOrange)
+                        item.productionHint?.let { Text(it, color = RadarLime) }
+                    }
+                    Text(item.bucket.name.readable(), color = RadarMuted, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+
+        SectionHeader("Verify Before Saving")
+        if (result.verifyList.isEmpty()) {
+            EmptyState("No low-confidence labels", "Current sample labels are above the verification threshold.")
+        } else {
+            result.verifyList.forEach { item ->
+                SimpleCard {
+                    Text("${item.sku}  ${item.name}", fontWeight = FontWeight.SemiBold)
+                    Text("Confidence ${(item.confidence * 100).toInt()}% | ${item.location.name.readable()}", color = RadarMuted)
+                    Text("Review label before this count affects ordering.", color = RadarOrange)
+                }
+            }
+        }
     }
 }
 
@@ -905,6 +957,99 @@ private fun StatusChip(label: String, status: ForecastStatus) {
     Surface(color = color, contentColor = if (status == ForecastStatus.ORDER_NEEDED || status == ForecastStatus.CRITICAL) Color.White else Color(0xFF12140F), shape = RoundedCornerShape(6.dp)) {
         Text(label, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
     }
+}
+
+@Composable
+private fun DeliActionChip(action: DeliOrderAction) {
+    val color = when (action) {
+        DeliOrderAction.ORDER -> RadarOrange
+        DeliOrderAction.TRIM -> RadarLime
+        DeliOrderAction.SKIP -> Color(0xFFC9CED1)
+        DeliOrderAction.VERIFY -> RadarRed
+    }
+    Surface(color = color, contentColor = if (action == DeliOrderAction.VERIFY) Color.White else Color(0xFF12140F), shape = RoundedCornerShape(6.dp)) {
+        Text(action.name, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+    }
+}
+
+private fun sampleDeliReconciliation(today: LocalDate): DeliReconciliationResult {
+    val nextDelivery = today.plusDays(3)
+    return DeliReconciliationEngine.reconcile(
+        DeliReconciliationRequest(
+            today = today,
+            nextDeliveryDate = nextDelivery,
+            coverageWindowDays = 7,
+            inventory = listOf(
+                DeliInventoryItem(
+                    sku = "300441",
+                    name = "Jumbo wings",
+                    category = DeliCategory.WINGS_TENDERS,
+                    casesOnHand = 10.0,
+                    caseWeightLbs = 40.0,
+                    useByDate = today.plusDays(1),
+                    location = InventoryLocation.COOLER,
+                    confidence = 0.94,
+                    photoRefs = listOf("cooler-1"),
+                    verified = true
+                ),
+                DeliInventoryItem(
+                    sku = "441229",
+                    name = "Grab n go pudding",
+                    category = DeliCategory.PUDDING,
+                    casesOnHand = 1.0,
+                    caseWeightLbs = 12.0,
+                    useByDate = today.plusDays(9),
+                    location = InventoryLocation.SALES_FLOOR,
+                    confidence = 0.91,
+                    photoRefs = listOf("floor-1"),
+                    verified = true
+                ),
+                DeliInventoryItem(
+                    sku = "772018",
+                    name = "Turkey breast",
+                    category = DeliCategory.DELI_MEAT,
+                    casesOnHand = 2.0,
+                    caseWeightLbs = 9.5,
+                    useByDate = today.plusDays(8),
+                    location = InventoryLocation.SLICER_BACKSTOCK,
+                    confidence = 0.57,
+                    photoRefs = listOf("slicer-2"),
+                    verified = false
+                ),
+                DeliInventoryItem(
+                    sku = "884202",
+                    name = "Macaroni salad",
+                    category = DeliCategory.SALADS,
+                    casesOnHand = 12.0,
+                    caseWeightLbs = 10.0,
+                    useByDate = today.plusDays(8),
+                    location = InventoryLocation.COOLER,
+                    confidence = 0.96,
+                    photoRefs = listOf("cooler-2"),
+                    verified = true
+                )
+            ),
+            promos = listOf(
+                PromoItem(
+                    sku = "441229",
+                    name = "Grab n go pudding",
+                    dealType = PromoDealType.BOGO,
+                    retailPrice = 4.99,
+                    salePrice = 2.49,
+                    discountPct = 50.0,
+                    adStartDate = today.plusDays(4),
+                    adEndDate = today.plusDays(10),
+                    placement = "weekly ad"
+                )
+            ),
+            orderLines = listOf(
+                SupplierOrderLine("300441", "Jumbo wings", "40 lb", suggestedCases = 3.0, forecastDemandCases = 4.0, safetyStockCases = 1.0, orderIndex = 0),
+                SupplierOrderLine("441229", "Grab n go pudding", "12 ct", suggestedCases = 2.0, forecastDemandCases = 4.0, safetyStockCases = 1.0, orderIndex = 1),
+                SupplierOrderLine("772018", "Turkey breast", "random weight", suggestedCases = 2.0, forecastDemandCases = 3.0, safetyStockCases = 1.0, orderIndex = 2),
+                SupplierOrderLine("884202", "Macaroni salad", "10 lb", suggestedCases = 5.0, forecastDemandCases = 5.0, safetyStockCases = 1.0, orderIndex = 3)
+            )
+        )
+    )
 }
 
 @Composable
