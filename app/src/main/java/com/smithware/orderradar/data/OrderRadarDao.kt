@@ -118,4 +118,10 @@ interface OrderRadarDao {
 
     @Query("DELETE FROM Product")
     suspend fun clearProducts()
+
+    @Query("SELECT * FROM VisionCorrection ORDER BY createdAt DESC")
+    fun visionCorrections(): Flow<List<VisionCorrection>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertVisionCorrection(correction: VisionCorrection): Long
 }

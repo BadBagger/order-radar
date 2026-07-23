@@ -1,6 +1,7 @@
 package com.smithware.orderradar.data
 
 import android.util.Base64
+import com.smithware.orderradar.domain.clean
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -12,8 +13,25 @@ data class VisionCountSuggestion(
     val itemName: String,
     val estimatedQuantity: Double,
     val unit: String,
-    val confidence: String,
+    val confidencePercent: Int,
     val notes: String
+) {
+    val confidenceLabel: String get() = when {
+        confidencePercent >= 80 -> "high"
+        confidencePercent >= 50 -> "medium"
+        else -> "low"
+    }
+}
+
+// Recent count/usage history for one known product, folded into the vision prompt so the AI
+// can sanity-check a raw photo estimate against what this product's supply actually looks like
+// (e.g. a count of 12 is probably a misread if this product has never had more than 2 on hand).
+data class ProductHistoryHint(
+    val name: String,
+    val lastCountQuantity: Double?,
+    val lastCountUnit: String?,
+    val daysSinceLastCount: Int?,
+    val averageDailyUsage: Double?
 )
 
 sealed class VisionCountResult {
@@ -33,11 +51,19 @@ object VisionCountClient {
     private const val ANTHROPIC_VERSION = "2023-06-01"
     private const val OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
-    fun countShelfPhoto(provider: VisionProvider, apiKey: String, model: String, photo: File, knownProductNames: List<String>): VisionCountResult {
+    fun countShelfPhoto(
+        provider: VisionProvider,
+        apiKey: String,
+        model: String,
+        photo: File,
+        knownProductNames: List<String>,
+        ocrText: String = "",
+        historyHints: List<ProductHistoryHint> = emptyList()
+    ): VisionCountResult {
         if (apiKey.isBlank()) return VisionCountResult.Failure("No API key set. Add one in Settings to use AI shelf counting.")
         return try {
             val imageBase64 = Base64.encodeToString(photo.readBytes(), Base64.NO_WRAP)
-            val prompt = buildPrompt(knownProductNames)
+            val prompt = buildPrompt(knownProductNames, ocrText, historyHints)
             val responseText = when (provider) {
                 VisionProvider.ANTHROPIC -> postToAnthropic(model, apiKey, imageBase64, prompt)
                 VisionProvider.OPENAI -> postToOpenAi(model, apiKey, imageBase64, prompt)
@@ -48,16 +74,34 @@ object VisionCountClient {
         }
     }
 
-    private fun buildPrompt(knownProductNames: List<String>): String {
+    private fun buildPrompt(knownProductNames: List<String>, ocrText: String, historyHints: List<ProductHistoryHint>): String {
         val knownList = if (knownProductNames.isEmpty()) "none saved yet" else knownProductNames.joinToString(", ")
+        val historyBlock = if (historyHints.isEmpty()) "No count history yet." else historyHints.joinToString("\n") { hint ->
+            val parts = mutableListOf<String>()
+            if (hint.lastCountQuantity != null) parts += "last counted ${hint.lastCountQuantity.clean()} ${hint.lastCountUnit.orEmpty()}".trim()
+            if (hint.daysSinceLastCount != null) parts += "${hint.daysSinceLastCount} day(s) ago"
+            if (hint.averageDailyUsage != null) parts += "averages ${hint.averageDailyUsage.clean()}/day"
+            "- ${hint.name}: ${if (parts.isEmpty()) "no prior data" else parts.joinToString(", ")}"
+        }
+        val ocrBlock = if (ocrText.isBlank()) "No text was legible on the photo." else
+            "Text an on-device OCR pass found on labels/signage in this photo (may be partial, out of order, or noisy): \"${ocrText.take(800)}\""
+
         return """
             You are helping a deli/grocery manager count physical inventory from a shelf or cooler photo.
+            Real shelf photos are often imperfect: blurry, tilted, cropped, partially blocked by other items, or dim. Do not skip an item just because it isn't perfectly legible -- use packaging shape, color, stacking pattern, partial text, and the context below to make your best estimate, and reflect any uncertainty in the confidence score instead of leaving the item out.
             List every distinct food product you can see and estimate how many discrete units (boxes, chubs, tubs, packages, or trays) of each are visible. Do not estimate by weight.
+
             Known products already tracked in this app: $knownList.
             If an item matches one of the known products (even loosely, e.g. "Caesar Pasta Salad" for a tub labeled "Caesar Pasta Salad Base"), reuse that exact known product name. Otherwise invent a short, clear product name.
+
+            Recent count/usage history for known products (use it to sanity-check an estimate that seems off -- e.g. if a product rarely has more than 2 on hand, a photo estimate of 12 is probably a miscount, not a restock):
+            $historyBlock
+
+            $ocrBlock
+
             Respond with ONLY a JSON object, no markdown fences, no commentary, in this exact shape:
-            {"items":[{"name":"string","quantity":number,"unit":"string","confidence":"high|medium|low","notes":"string"}]}
-            Use "unit" values like "boxes", "cases", "each", "tubs", or "trays" based on how the product is packaged. Keep "notes" under 15 words explaining what you counted or any uncertainty (e.g. partially hidden items).
+            {"items":[{"name":"string","quantity":number,"unit":"string","confidence":number,"notes":"string"}]}
+            "confidence" must be an integer from 0 to 100 reflecting how sure you are of that specific count, given photo quality and how well it matches the history above. Use "unit" values like "boxes", "cases", "each", "tubs", or "trays" based on how the product is packaged. Keep "notes" under 15 words explaining what you counted or any uncertainty (e.g. partially hidden items, a blurry region, or that you cross-checked against history).
         """.trimIndent()
     }
 
@@ -150,13 +194,26 @@ object VisionCountClient {
                 itemName = name,
                 estimatedQuantity = item.optDouble("quantity", 1.0).let { if (it.isNaN()) 1.0 else it },
                 unit = item.optString("unit").ifBlank { "each" },
-                confidence = item.optString("confidence").ifBlank { "medium" },
+                confidencePercent = parseConfidence(item.opt("confidence")),
                 notes = item.optString("notes")
             )
         }
         return if (suggestions.isEmpty()) VisionCountResult.Failure("AI did not detect any items. Try a clearer photo or count manually.")
         else VisionCountResult.Success(suggestions)
     }
+
+    // Accepts either the numeric 0-100 we ask for, or a stray "high|medium|low" string, in case
+    // a model ignores the schema -- never let a parsing mismatch drop an otherwise-good item.
+    private fun parseConfidence(raw: Any?): Int = when (raw) {
+        is Number -> raw.toInt()
+        is String -> when (raw.trim().lowercase()) {
+            "high" -> 90
+            "medium" -> 60
+            "low" -> 30
+            else -> raw.toDoubleOrNull()?.toInt() ?: 50
+        }
+        else -> 50
+    }.coerceIn(0, 100)
 
     private fun extractJsonObject(text: String): String? {
         val start = text.indexOf('{')

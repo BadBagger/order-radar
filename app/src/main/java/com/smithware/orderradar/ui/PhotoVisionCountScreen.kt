@@ -20,17 +20,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -39,11 +42,21 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.smithware.orderradar.data.Product
+import com.smithware.orderradar.data.ProductHistoryHint
+import com.smithware.orderradar.data.ProductSnapshot
+import com.smithware.orderradar.data.VisionCorrection
 import com.smithware.orderradar.data.VisionCountClient
 import com.smithware.orderradar.data.VisionCountResult
 import com.smithware.orderradar.data.VisionCountSuggestion
 import com.smithware.orderradar.data.VisionProvider
+import com.smithware.orderradar.domain.MovementAverageEngine
+import com.smithware.orderradar.domain.VisionBias
+import com.smithware.orderradar.domain.VisionLearningEngine
+import com.smithware.orderradar.domain.clean
 import com.smithware.orderradar.ui.theme.RadarCard
 import com.smithware.orderradar.ui.theme.RadarCharcoal
 import com.smithware.orderradar.ui.theme.RadarLime
@@ -58,16 +71,18 @@ import java.io.File
 private data class VisionSuggestionRow(
     val suggestion: VisionCountSuggestion,
     val matchedProductId: Long?,
+    val displayConfidencePercent: Int,
     val quantity: String,
     val checked: Boolean = true
 )
 
 @Composable
 fun PhotoVisionCountScreen(
-    products: List<Product>,
+    snapshots: List<ProductSnapshot>,
     provider: VisionProvider,
     apiKey: String,
     model: String,
+    corrections: List<VisionCorrection>,
     onSaveCounts: (List<VisionCountRow>, String?) -> Unit,
     onOpenSettings: () -> Unit,
     onBack: () -> Unit
@@ -76,6 +91,22 @@ fun PhotoVisionCountScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
     val scope = rememberCoroutineScope()
+
+    val products = remember(snapshots) { snapshots.map { it.product } }
+    // Recent count/usage per known product, handed to the AI so it can weigh a shaky photo
+    // estimate against what this product's supply actually tends to look like.
+    val historyHints = remember(snapshots) {
+        snapshots.map { snapshot ->
+            val daysSince = snapshot.latestCount?.let { ((System.currentTimeMillis() - it.countDate) / 86_400_000L).toInt() }
+            ProductHistoryHint(
+                name = snapshot.product.name,
+                lastCountQuantity = snapshot.latestCount?.quantity,
+                lastCountUnit = snapshot.latestCount?.unit,
+                daysSinceLastCount = daysSince,
+                averageDailyUsage = MovementAverageEngine.averageDailyUsage(snapshot.movements).takeIf { it > 0.0 }
+            )
+        }
+    }
 
     var hasPermission by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -86,14 +117,16 @@ fun PhotoVisionCountScreen(
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var capturedPath by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf("Take a wide, well-lit photo of the shelf or cooler you want to count, or choose one from your gallery.") }
+    var status by remember { mutableStateOf("Take a wide, well-lit photo of the shelf or cooler you want to count, or choose one from your gallery. Blurry or angled photos are fine -- do your best and adjust low-confidence rows after.") }
     var isLoading by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     var rows by remember { mutableStateOf<List<VisionSuggestionRow>>(emptyList()) }
 
     // Shared by both the camera-capture and gallery paths, so a picked photo gets the exact
-    // same AI-count treatment as a freshly-captured one.
-    fun runVisionCount(file: File) {
+    // same AI-count treatment as a freshly-captured one. ocrText comes from an on-device ML Kit
+    // pass so the vision call combines OCR, image understanding, and count history instead of
+    // leaning on any one signal alone.
+    fun runVisionCount(file: File, ocrText: String) {
         capturedPath = file.absolutePath
         if (apiKey.isBlank()) {
             status = "No API key set. Add rows manually below or set a key in Settings."
@@ -103,20 +136,25 @@ fun PhotoVisionCountScreen(
         status = "Asking AI to count what's visible..."
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                VisionCountClient.countShelfPhoto(provider, apiKey, model, file, products.map { it.name })
+                VisionCountClient.countShelfPhoto(provider, apiKey, model, file, products.map { it.name }, ocrText, historyHints)
             }
             isLoading = false
             when (result) {
                 is VisionCountResult.Success -> {
                     rows = result.items.map { suggestion ->
                         val match = bestProductMatch(suggestion.itemName, products)
+                        val bias = match?.let { VisionLearningEngine.biasFor(corrections, it.id) } ?: VisionBias(1.0, 1.0, 0)
+                        val (adjustedQuantity, adjustedConfidence) = VisionLearningEngine.applyBias(
+                            suggestion.estimatedQuantity, suggestion.confidencePercent, bias
+                        )
                         VisionSuggestionRow(
                             suggestion = suggestion,
                             matchedProductId = match?.id,
-                            quantity = suggestion.estimatedQuantity.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
+                            displayConfidencePercent = adjustedConfidence,
+                            quantity = adjustedQuantity.clean()
                         )
                     }
-                    status = "AI found ${rows.size} item(s). Confirm product match and quantity for each."
+                    status = "AI found ${rows.size} item(s). Confirm product match and quantity for each -- low-confidence rows are flagged for a quick check."
                 }
                 is VisionCountResult.Failure -> {
                     status = result.message
@@ -125,12 +163,25 @@ fun PhotoVisionCountScreen(
         }
     }
 
+    fun readTextThenCount(file: File) {
+        status = "Reading text on the photo..."
+        try {
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val image = InputImage.fromFilePath(context, Uri.fromFile(file))
+            recognizer.process(image)
+                .addOnSuccessListener { result -> runVisionCount(file, result.text) }
+                .addOnFailureListener { runVisionCount(file, "") }
+        } catch (e: Exception) {
+            runVisionCount(file, "")
+        }
+    }
+
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         val file = createPhotoFile(context.filesDir)
         try {
             context.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
-            runVisionCount(file)
+            readTextThenCount(file)
         } catch (e: Exception) {
             status = "Could not read that photo: ${e.message ?: "unknown error"}"
         }
@@ -213,7 +264,7 @@ fun PhotoVisionCountScreen(
                                 mainExecutor,
                                 object : ImageCapture.OnImageSavedCallback {
                                     override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                                        runVisionCount(file)
+                                        readTextThenCount(file)
                                     }
 
                                     override fun onError(exception: ImageCaptureException) {
@@ -256,7 +307,7 @@ fun PhotoVisionCountScreen(
                             val confirmed = rows.filter { it.checked }.mapNotNull { row ->
                                 val quantity = row.quantity.toDoubleOrNull() ?: return@mapNotNull null
                                 val matchedProduct = row.matchedProductId?.let { id -> products.firstOrNull { it.id == id } }
-                                VisionCountRow(row.suggestion.copy(estimatedQuantity = quantity), matchedProduct)
+                                VisionCountRow(row.suggestion, matchedProduct, quantity)
                             }
                             if (confirmed.isNotEmpty()) {
                                 onSaveCounts(confirmed, capturedPath)
@@ -307,11 +358,32 @@ fun PhotoVisionCountScreen(
 private fun VisionRow(products: List<Product>, row: VisionSuggestionRow, onChange: (VisionSuggestionRow) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     val matched = row.matchedProductId?.let { id -> products.firstOrNull { it.id == id } }
+    val confidenceColor = when {
+        row.displayConfidencePercent >= 80 -> RadarLime
+        row.displayConfidencePercent >= 50 -> Color(0xFFE0A526)
+        else -> RadarOrange
+    }
     AssistCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = row.checked, onCheckedChange = { onChange(row.copy(checked = it)) })
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("AI detected: \"${row.suggestion.itemName}\" (${row.suggestion.confidence} confidence)", color = RadarMuted, style = MaterialTheme.typography.labelSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "AI detected: \"${row.suggestion.itemName}\"",
+                        color = RadarMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Surface(color = confidenceColor.copy(alpha = 0.18f), shape = RoundedCornerShape(6.dp)) {
+                        Text(
+                            "${row.displayConfidencePercent}%",
+                            color = confidenceColor,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
                 Box {
                     OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
                         Text(matched?.name ?: "New product: ${row.suggestion.itemName}", modifier = Modifier.weight(1f))
@@ -323,15 +395,31 @@ private fun VisionRow(products: List<Product>, row: VisionSuggestionRow, onChang
                         }
                     }
                 }
-                OutlinedTextField(
-                    value = row.quantity,
-                    onValueChange = { onChange(row.copy(quantity = it)) },
-                    label = { Text("Confirmed count") },
-                    suffix = { Text(matched?.defaultUnit ?: row.suggestion.unit) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilledTonalIconButton(onClick = {
+                        val current = row.quantity.toDoubleOrNull() ?: 0.0
+                        onChange(row.copy(quantity = (current - 1.0).coerceAtLeast(0.0).clean()))
+                    }) { Icon(Icons.Default.Remove, contentDescription = "Decrease count") }
+                    OutlinedTextField(
+                        value = row.quantity,
+                        onValueChange = { onChange(row.copy(quantity = it)) },
+                        label = { Text("Confirmed count") },
+                        suffix = { Text(matched?.defaultUnit ?: row.suggestion.unit) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilledTonalIconButton(onClick = {
+                        val current = row.quantity.toDoubleOrNull() ?: 0.0
+                        onChange(row.copy(quantity = (current + 1.0).clean()))
+                    }) { Icon(Icons.Default.Add, contentDescription = "Increase count") }
+                }
+                if (row.displayConfidencePercent < 80) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AssistChip(onClick = { onChange(row.copy(quantity = "0")) }, label = { Text("Not here") })
+                        AssistChip(onClick = { onChange(row.copy(checked = true)) }, label = { Text("Looks right") })
+                    }
+                }
                 if (row.suggestion.notes.isNotBlank()) {
                     Text(row.suggestion.notes, color = RadarMuted, style = MaterialTheme.typography.labelSmall)
                 }

@@ -19,6 +19,7 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
     val recipes = dao.recipes()
     val recipeIngredients = dao.recipeIngredients()
     val productTruckLinks = dao.productTruckLinks()
+    val visionCorrections = dao.visionCorrections()
 
     val snapshots: Flow<List<ProductSnapshot>> = combine(products, counts, movements, trucks, productTruckLinks) { products, counts, movements, trucks, links ->
         products.map { product ->
@@ -74,6 +75,7 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
         InventoryCount(productId = product.id, quantity = quantity, unit = product.defaultUnit, source = CountSource.PHOTO_ASSIST, photoUri = photoUri, notes = note)
     )
     suspend fun addMovement(product: Product, quantity: Double, type: MovementType, note: String) = dao.insertMovement(MovementEntry(productId = product.id, quantity = quantity, unit = product.defaultUnit, movementType = type, notes = note))
+    suspend fun addVisionCorrection(correction: VisionCorrection) = dao.insertVisionCorrection(correction)
     suspend fun saveProduct(product: Product): Long = dao.upsertProduct(product.copy(updatedAt = System.currentTimeMillis()))
     suspend fun createOrderFromPhoto(
         truck: TruckSchedule,
