@@ -77,6 +77,7 @@ class OrderRadarRepository(private val dao: OrderRadarDao) {
     suspend fun addMovement(product: Product, quantity: Double, type: MovementType, note: String) = dao.insertMovement(MovementEntry(productId = product.id, quantity = quantity, unit = product.defaultUnit, movementType = type, notes = note))
     suspend fun addVisionCorrection(correction: VisionCorrection) = dao.insertVisionCorrection(correction)
     suspend fun saveProduct(product: Product): Long = dao.upsertProduct(product.copy(updatedAt = System.currentTimeMillis()))
+    suspend fun deleteProduct(product: Product) = dao.deleteProduct(product.id)
     suspend fun createOrderFromPhoto(
         truck: TruckSchedule,
         lines: List<Pair<Product, Double>>,

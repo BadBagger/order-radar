@@ -100,6 +100,10 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     onSave = { productToSave ->
                         vm.saveProduct(productToSave)
                         editProductId = null
+                    },
+                    onDelete = { productToDelete ->
+                        vm.deleteProduct(productToDelete)
+                        editProductId = null
                     }
                 )
                 showProducts -> ProductListScreen(
@@ -513,8 +517,9 @@ private fun ProductListScreen(
 }
 
 @Composable
-private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (Product) -> Unit) {
+private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (Product) -> Unit, onDelete: (Product) -> Unit) {
     val isNew = product == null
+    var showDeleteConfirm by remember(product) { mutableStateOf(false) }
     var name by remember(product) { mutableStateOf(product?.name ?: "") }
     var category by remember(product) { mutableStateOf(product?.category ?: ProductCategory.BOX_MEAT) }
     var vendor by remember(product) { mutableStateOf(product?.vendor ?: "") }
@@ -573,6 +578,32 @@ private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (
                 )
             }
         }
+        if (!isNew) {
+            OutlinedButton(
+                onClick = { showDeleteConfirm = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = RadarOrange)
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Delete Product")
+            }
+        }
+    }
+    if (showDeleteConfirm && product != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete ${product.name}?") },
+            text = { Text("This removes the product itself. Its past counts, orders, and deliveries stay in history but will show as an unknown product. This can't be undone from here.") },
+            confirmButton = {
+                TextButton(onClick = { showDeleteConfirm = false; onDelete(product) }) {
+                    Text("Delete", color = RadarOrange)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 

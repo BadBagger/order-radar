@@ -119,6 +119,9 @@ interface OrderRadarDao {
     @Query("DELETE FROM Product")
     suspend fun clearProducts()
 
+    @Query("DELETE FROM Product WHERE id = :productId")
+    suspend fun deleteProduct(productId: Long)
+
     @Query("SELECT * FROM VisionCorrection ORDER BY createdAt DESC")
     fun visionCorrections(): Flow<List<VisionCorrection>>
 

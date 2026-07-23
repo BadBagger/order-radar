@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DeliveryLine::class, VarianceLog::class, DisplayPlan::class, Recipe::class,
         RecipeIngredient::class, ProductionLog::class, PhotoAttachment::class, VisionCorrection::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -78,10 +78,19 @@ abstract class OrderRadarDatabase : RoomDatabase() {
             }
         }
 
+        // Removes the two leftover generic sample products the manager confirmed aren't real
+        // ("Chicken Breast Box", "Ham Case") now that the real lineup exists (MIGRATION_3_4).
+        // Only deletes by exact name, so a product the manager renamed to reuse is untouched.
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DELETE FROM `Product` WHERE name IN ('Chicken Breast Box', 'Ham Case')")
+            }
+        }
+
         fun create(context: Context): OrderRadarDatabase = Room.databaseBuilder(
             context,
             OrderRadarDatabase::class.java,
             "order-radar.db"
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
     }
 }

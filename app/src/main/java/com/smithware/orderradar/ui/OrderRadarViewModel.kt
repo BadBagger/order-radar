@@ -87,6 +87,10 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         repo.saveProduct(product)
     }
 
+    fun deleteProduct(product: Product) = viewModelScope.launch {
+        repo.deleteProduct(product)
+    }
+
     fun createOrderFromPhoto(truck: TruckSchedule, lines: List<Pair<Product, Double>>, sourceNote: String) = viewModelScope.launch {
         repo.createOrderFromPhoto(truck, lines, sourceNote)
     }
