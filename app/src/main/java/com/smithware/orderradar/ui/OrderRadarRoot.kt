@@ -67,6 +67,7 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                         onClick = { tab = item; detailProductId = null; showProducts = false; editProductId = null; showOrderImport = false; showVisionCount = false },
                         icon = { Icon(item.icon, contentDescription = item.label) },
                         label = { Text(item.label, maxLines = 1) },
+                        alwaysShowLabel = false,
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = RadarCharcoal, selectedTextColor = RadarLime, indicatorColor = RadarLime, unselectedIconColor = RadarMuted, unselectedTextColor = RadarMuted)
                     )
                 }
@@ -702,12 +703,10 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
         }
         result.orderSheet.forEach { rec ->
             SimpleCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("${rec.sku}  ${rec.itemName}", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("System ${rec.systemSuggestedCases.clean()} -> Radar ${rec.radarRecommendedCases.clean()} cases (${rec.deltaCases.clean()})", color = RadarText)
-                        Text(rec.reason, color = RadarMuted)
-                    }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${rec.sku}  ${rec.itemName}", fontWeight = FontWeight.Bold)
+                    Text("System ${rec.systemSuggestedCases.clean()} -> Radar ${rec.radarRecommendedCases.clean()} cases (${rec.deltaCases.clean()})", color = RadarText)
+                    Text(rec.reason, color = RadarMuted)
                     DeliActionChip(rec.action)
                 }
             }
@@ -725,13 +724,11 @@ private fun DeliWorkflowScreen(onSaveSession: (DeliScanSession) -> Unit) {
                 } else {
                     items.forEach { item ->
                         SimpleCard {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(item.itemName, fontWeight = FontWeight.SemiBold)
-                                    Text("${item.cases.clean()} cases${item.pounds?.let { " | ${it.clean()} lb" } ?: ""} | ${item.location.name.readable()}", color = RadarMuted)
-                                    Text("Use by ${item.useByDate ?: "unknown"} | ${item.relativeUseBy(today)}", color = RadarOrange)
-                                    item.productionHint?.let { Text(it, color = RadarLime) }
-                                }
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(item.itemName, fontWeight = FontWeight.SemiBold)
+                                Text("${item.cases.clean()} cases${item.pounds?.let { " | ${it.clean()} lb" } ?: ""} | ${item.location.name.readable()}", color = RadarMuted)
+                                Text("Use by ${item.useByDate ?: "unknown"} | ${item.relativeUseBy(today)}", color = RadarOrange)
+                                item.productionHint?.let { Text(it, color = RadarLime) }
                                 Text(item.bucket.label(), color = RadarMuted, style = MaterialTheme.typography.labelMedium)
                             }
                         }
@@ -890,12 +887,12 @@ private fun DeliProgressPanel(status: DeliExtractionStatus, session: DeliScanSes
             DeliExtractionStatus.NEEDS_VERIFICATION,
             DeliExtractionStatus.COMPLETE
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             steps.forEach { step ->
                 DeliStatusPill(
                     label = step.name.readable(),
                     active = step == status || (step == DeliExtractionStatus.COMPLETE && session?.progress?.state == DeliScanSessionProgressState.READY_FOR_REVIEW),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f).widthIn(min = 132.dp)
                 )
             }
         }
@@ -995,13 +992,15 @@ private fun DeliInventoryReviewSection(
             indexed.value.caseWeightLbs?.let { it * indexed.value.casesOnHand }
         }.takeIf { it.isNotEmpty() }?.sum()
         SimpleCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("${first.sku}  ${first.category.name.readable()}", fontWeight = FontWeight.Bold)
-                    Text("${first.location.name.readable()} | ${totalCases.clean()} cases${totalPounds?.let { " | ${it.clean()} lb" } ?: ""}", color = RadarMuted)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${first.sku}  ${first.category.name.readable()}", fontWeight = FontWeight.Bold)
+                        Text("${first.location.name.readable()} | ${totalCases.clean()} cases${totalPounds?.let { " | ${it.clean()} lb" } ?: ""}", color = RadarMuted)
+                    }
                 }
                 if (group.size > 1) {
-                    DeliStatusPill("Merge review", active = true)
+                    DeliStatusPill("Merge review", active = true, modifier = Modifier.widthIn(min = 132.dp))
                 }
             }
             if (group.size > 1) {
