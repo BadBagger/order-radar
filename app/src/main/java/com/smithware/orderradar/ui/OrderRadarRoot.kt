@@ -78,6 +78,8 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     provider = settings.visionProvider,
                     apiKey = settings.activeVisionApiKey,
                     model = settings.activeVisionModel,
+                    ollamaBaseUrl = settings.ollamaBaseUrl,
+                    ollamaModel = settings.ollamaVisionModel,
                     corrections = state.visionCorrections,
                     onSaveCounts = { rows, photoPath -> vm.saveVisionCounts(rows, photoPath) },
                     onOpenSettings = { showVisionCount = false; tab = Tab.Reports },
@@ -135,7 +137,8 @@ fun OrderRadarRoot(vm: OrderRadarViewModel = viewModel()) {
                     settings,
                     onSetVisionProvider = vm::setVisionProvider,
                     onSaveAnthropicVisionSettings = vm::updateAnthropicVisionSettings,
-                    onSaveOpenAiVisionSettings = vm::updateOpenAiVisionSettings
+                    onSaveOpenAiVisionSettings = vm::updateOpenAiVisionSettings,
+                    onSaveOllamaSettings = vm::updateOllamaSettings
                 )
             }
         }
@@ -433,7 +436,8 @@ private fun ReportsScreen(
     settings: AppSettings,
     onSetVisionProvider: (VisionProvider) -> Unit,
     onSaveAnthropicVisionSettings: (String, String) -> Unit,
-    onSaveOpenAiVisionSettings: (String, String) -> Unit
+    onSaveOpenAiVisionSettings: (String, String) -> Unit,
+    onSaveOllamaSettings: (String, String) -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
     val report = buildReport(state)
@@ -446,7 +450,7 @@ private fun ReportsScreen(
             Text(report, color = RadarMuted)
         }
         BigActionButton("Copy Report", Icons.Default.ContentCopy) { clipboard.setText(AnnotatedString(report)) }
-        SettingsSection(settings, onSetVisionProvider, onSaveAnthropicVisionSettings, onSaveOpenAiVisionSettings)
+        SettingsSection(settings, onSetVisionProvider, onSaveAnthropicVisionSettings, onSaveOpenAiVisionSettings, onSaveOllamaSettings)
     }
 }
 
@@ -781,7 +785,8 @@ private fun SettingsSection(
     settings: AppSettings,
     onSetVisionProvider: (VisionProvider) -> Unit,
     onSaveAnthropicVisionSettings: (String, String) -> Unit,
-    onSaveOpenAiVisionSettings: (String, String) -> Unit
+    onSaveOpenAiVisionSettings: (String, String) -> Unit,
+    onSaveOllamaSettings: (String, String) -> Unit
 ) {
     SectionHeader("Settings / Privacy")
     SimpleCard {
@@ -835,6 +840,29 @@ private fun SettingsSection(
                 color = RadarMuted
             )
         }
+    }
+    SimpleCard {
+        var baseUrl by remember(settings.ollamaBaseUrl) { mutableStateOf(settings.ollamaBaseUrl) }
+        var ollamaModel by remember(settings.ollamaVisionModel) { mutableStateOf(settings.ollamaVisionModel) }
+
+        Text("Compare with Ollama (optional)", fontWeight = FontWeight.Bold)
+        Text("Point this at your own local or self-hosted Ollama server (e.g. a Tailscale address) running a vision model. Once set, AI Shelf Count gets a \"Compare with Ollama\" button that runs the same photos through it as a free second opinion -- it never replaces your primary provider above, and results are never saved on their own.", color = RadarMuted)
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it },
+            label = { Text("Ollama base URL") },
+            placeholder = { Text("e.g. http://100.x.x.x:11434") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = ollamaModel,
+            onValueChange = { ollamaModel = it },
+            label = { Text("Ollama vision model") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        BigActionButton("Save Ollama Settings", Icons.Default.Save) { onSaveOllamaSettings(baseUrl, ollamaModel) }
     }
 }
 

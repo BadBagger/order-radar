@@ -102,6 +102,29 @@ object VisionCountClient {
         }
     }
 
+    // Not a primary provider -- this runs the exact same prompt/photos against the manager's
+    // own local/self-hosted Ollama vision model as an optional second opinion, so a disagreement
+    // with the primary provider's result surfaces before it's saved, not after.
+    fun countShelfPhotoViaOllama(
+        baseUrl: String,
+        model: String,
+        photos: List<File>,
+        knownProductNames: List<String>,
+        ocrText: String = "",
+        historyHints: List<ProductHistoryHint> = emptyList()
+    ): VisionCountResult {
+        if (baseUrl.isBlank()) return VisionCountResult.Failure("No Ollama base URL set. Add one in Settings to use the compare scan.")
+        if (photos.isEmpty()) return VisionCountResult.Failure("No photo to analyze.")
+        return try {
+            val imagesBase64 = photos.map { Base64.encodeToString(it.readBytes(), Base64.NO_WRAP) }
+            val prompt = buildPrompt(knownProductNames, ocrText, historyHints, imagesBase64.size)
+            val responseText = postToOllama(baseUrl, model, imagesBase64, prompt)
+            parseSuggestions(responseText)
+        } catch (e: Exception) {
+            VisionCountResult.Failure("Ollama compare scan failed: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
     private fun buildPrompt(knownProductNames: List<String>, ocrText: String, historyHints: List<ProductHistoryHint>, photoCount: Int): String {
         val knownList = if (knownProductNames.isEmpty()) "none saved yet" else knownProductNames.joinToString(", ")
         // Grouped by category so visually-similar products (e.g. a store's whole wings/tenders
@@ -306,6 +329,44 @@ object VisionCountClient {
         if (choices.length() == 0) throw IllegalStateException("Empty choices array in OpenAI response")
         return choices.getJSONObject(0).optJSONObject("message")?.optString("content")
             ?: throw IllegalStateException("No message content in OpenAI response")
+    }
+
+    // ---- Ollama (local/self-hosted) ---------------------------------------
+
+    // Ollama's native chat API, not OpenAI-compatible: images ride as a base64 array on the
+    // message itself, not as content parts. Uses the plain HttpURLConnection superclass rather
+    // than HttpsURLConnection since a local/Tailscale Ollama endpoint is almost always
+    // http://, not https://.
+    private fun postToOllama(baseUrl: String, model: String, images: List<String>, prompt: String): String {
+        val url = "${baseUrl.trim().trimEnd('/')}/api/chat"
+        val message = JSONObject()
+            .put("role", "user")
+            .put("content", prompt)
+            .put("images", JSONArray(images))
+        val requestBody = JSONObject()
+            .put("model", model)
+            .put("messages", JSONArray().put(message))
+            .put("stream", false)
+            .toString()
+
+        val connection = URL(url).openConnection() as java.net.HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 120_000
+        connection.setRequestProperty("content-type", "application/json")
+        connection.outputStream.use { stream: OutputStream -> stream.write(requestBody.toByteArray(Charsets.UTF_8)) }
+
+        val status = connection.responseCode
+        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+        val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        if (status !in 200..299) {
+            val message2 = runCatching { JSONObject(body).optString("error") }.getOrNull()
+            throw IllegalStateException(message2?.ifBlank { null } ?: "HTTP $status from Ollama at $url")
+        }
+
+        return JSONObject(body).optJSONObject("message")?.optString("content")
+            ?: throw IllegalStateException("No message content in Ollama response")
     }
 
     // ---- shared response parsing -------------------------------------------

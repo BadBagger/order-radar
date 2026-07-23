@@ -151,6 +151,10 @@ class OrderRadarViewModel(application: Application) : AndroidViewModel(applicati
         settingsStore.updateOpenAiVisionSettings(apiKey, model)
     }
 
+    fun updateOllamaSettings(baseUrl: String, model: String) = viewModelScope.launch {
+        settingsStore.updateOllamaSettings(baseUrl, model)
+    }
+
     fun saveVisionCounts(rows: List<VisionCountRow>, photoPath: String?) = viewModelScope.launch {
         rows.forEach { row ->
             val note = "AI shelf photo count (${row.suggestion.identificationConfidencePercent}% ID, ${row.suggestion.countConfidencePercent}% count confidence). ${row.suggestion.notes}".trim()
