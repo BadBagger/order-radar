@@ -29,6 +29,7 @@ data class VisionCountSuggestion(
 data class ProductHistoryHint(
     val name: String,
     val category: String,
+    val itemNumber: String?,
     val lastCountQuantity: Double?,
     val lastCountUnit: String?,
     val daysSinceLastCount: Int?,
@@ -107,6 +108,7 @@ object VisionCountClient {
             historyHints.groupBy { it.category }.entries.joinToString("\n\n") { (category, hints) ->
                 val lines = hints.joinToString("\n") { hint ->
                     val parts = mutableListOf<String>()
+                    if (hint.itemNumber != null) parts += "item # ${hint.itemNumber}"
                     if (hint.lastCountQuantity != null) parts += "last counted ${hint.lastCountQuantity.clean()} ${hint.lastCountUnit.orEmpty()}".trim()
                     if (hint.daysSinceLastCount != null) parts += "${hint.daysSinceLastCount} day(s) ago"
                     if (hint.averageDailyUsage != null) parts += "averages ${hint.averageDailyUsage.clean()}/day"
@@ -125,18 +127,19 @@ object VisionCountClient {
             List every distinct food product you can see and estimate how many discrete units (boxes, chubs, tubs, packages, or trays) of each are visible. Do not estimate by weight.
 
             Identification method -- do this deliberately, not as a guess: before naming an item, cross-check as many of these signals as are available and let them corroborate or contradict each other:
-            1. Box/case shape and size (e.g. narrow boxes with front handles vs. boxes with a band around the top and no handle are different product families).
-            2. The color-coding "visual ID" hint for each known product below, if one exists -- match by color first, since color reads more reliably than small print on a blurry photo.
-            3. Any OCR text below that matches a product name or code, even partially.
-            4. Shelf position -- products are usually restocked to a consistent spot, so a box's location matched against "usually found at" below is itself evidence of which product it is.
-            The more of these signals agree, the higher identificationConfidence should be. If you're naming something off one weak signal alone (e.g. only a vague box shape, nothing else corroborating), keep identificationConfidence low even if you're sure about the count.
+            1. A printed "item #" or case code on the box, if legible (even partially) -- match it against the "item #" listed for each known product below. This is usually the single most reliable signal on a case of otherwise-identical-looking boxes, since many vendors print an exact code but not a full readable product name.
+            2. Box/case shape and size (e.g. narrow boxes with front handles vs. boxes with a band around the top and no handle are different product families).
+            3. The color-coding "visual ID" hint for each known product below, if one exists -- match by color first, since color reads more reliably than small print on a blurry photo.
+            4. Any OCR text below that matches a product name or code, even partially.
+            5. Shelf position -- products are usually restocked to a consistent spot, so a box's location matched against "usually found at" below is itself evidence of which product it is.
+            The more of these signals agree, the higher identificationConfidence should be. If you can read an item # clearly and it matches a known product, that alone should give high confidence even without the other signals. If you're naming something off one weak signal alone (e.g. only a vague box shape, nothing else corroborating), keep identificationConfidence low even if you're sure about the count. If you can read a code but it does NOT match any known product's item #, say so in "notes" and lean toward proposing a new product named after that code rather than force-fitting a known one.
 
             Counting method: for products stored as identical stacked boxes/cases, you do not need to read the printed label on every box. Count distinct stacked units by their visible edges, seams, or shadow lines between boxes of the same size and color -- if you can see a stack of 4 same-size boxes, that is a count of 4 even if only the top box's text is legible. countConfidence is about the NUMBER specifically -- how cleanly you could see and count the stack given photo quality and occlusion -- and is independent of identificationConfidence: you can be very sure something is Original Rotisserie Chicken but unsure if there are 3 or 4 boxes, or sure there are 4 boxes of something but unsure which flavor.
 
             Known products already tracked in this app: $knownList.
             If an item genuinely IS one of the known products under a slightly different label (e.g. "Caesar Pasta Salad" for a tub printed "Caesar Pasta Salad Base" -- same product, just a shorter name), reuse that exact known product name. But accuracy comes first: do not force-fit to a known name just because it shares one word or a general category (e.g. do not call a whole rotisserie chicken "Chicken Breast Box" just because both involve chicken -- those are different products). If none of the known products are actually what you're looking at, invent a new, specific, accurate name instead -- a new product is far better than a mislabeled one.
 
-            Recent count/usage history for known products, grouped by category (use it to sanity-check an estimate that seems off -- e.g. if a product rarely has more than 2 on hand, a photo estimate of 12 is probably a miscount, not a restock). Products in the same category are often visually similar, so use one item's distinguishing clue (a handle, a color swatch, a box shape) to rule out its near-lookalikes in that same group, even if the photo only shows one of them -- this is a reference list, not a claim that every item in a group appears in every photo:
+            Recent count/usage history for known products, grouped by category (use it to sanity-check an estimate that seems off -- e.g. if a product rarely has more than 2 on hand, a photo estimate of 12 is probably a miscount, not a restock). Products in the same category are often visually similar, so use one item's distinguishing clue (an item #, a handle, a color swatch, a box shape) to rule out its near-lookalikes in that same group, even if the photo only shows one of them -- this is a reference list, not a claim that every item in a group appears in every photo:
             $historyBlock
 
             $ocrBlock

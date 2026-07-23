@@ -102,6 +102,7 @@ fun PhotoVisionCountScreen(
             ProductHistoryHint(
                 name = snapshot.product.name,
                 category = snapshot.product.category.name.lowercase().split("_").joinToString(" ") { it.replaceFirstChar(Char::uppercase) },
+                itemNumber = snapshot.product.itemNumber,
                 lastCountQuantity = snapshot.latestCount?.quantity,
                 lastCountUnit = snapshot.latestCount?.unit,
                 daysSinceLastCount = daysSince,

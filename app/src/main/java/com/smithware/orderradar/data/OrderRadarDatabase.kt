@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DeliveryLine::class, VarianceLog::class, DisplayPlan::class, Recipe::class,
         RecipeIngredient::class, ProductionLog::class, PhotoAttachment::class, VisionCorrection::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -87,10 +87,45 @@ abstract class OrderRadarDatabase : RoomDatabase() {
             }
         }
 
+        // Seeds the real Blount Fine Foods soup lineup the manager read off the case labels --
+        // these boxes are only told apart by a printed "Item #" code (no color/shape system),
+        // so this is the first seed to actually populate the itemNumber column instead of
+        // stuffing the code into visualIdentifiers.
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val now = System.currentTimeMillis()
+                val defaultNotes = "Added from your description of the Blount Fine Foods soup case-code system -- adjust safety stock, reorder point, and storage location to match reality."
+                val seeds = listOf(
+                    "Chili" to "80142",
+                    "Chicken Noodle" to "80041",
+                    "Chicken Wild Rice" to "80017",
+                    "Enchilada Soup" to "75164",
+                    "Chicken Sausage and Kale" to "75034",
+                    "Spring Vegetable" to "80189",
+                    "Lobster Bisque" to "80130",
+                    "Tomato Bisque" to "80194",
+                    "Potato Cheddar Soup" to "80014",
+                    "Broccoli Cheddar" to "80091",
+                    "Clam Chowder" to "7500",
+                    "Mushroom Bisque" to "80152"
+                )
+                seeds.forEach { (name, itemNumber) ->
+                    db.execSQL(
+                        """
+                        INSERT INTO `Product` (name, category, itemNumber, upc, vendor, department, storageLocation, defaultUnit, caseSize, boxWeight, safetyStock, reorderPoint, active, productPhotoUri, notes, visualIdentifiers, createdAt, updatedAt)
+                        SELECT ?, 'PREPARED_FOOD', ?, NULL, 'Blount Fine Foods', 'Deli', NULL, 'boxes', NULL, NULL, 1.0, 1.0, 1, NULL, ?, NULL, ?, ?
+                        WHERE NOT EXISTS (SELECT 1 FROM `Product` WHERE name = ?)
+                        """.trimIndent(),
+                        arrayOf<Any>(name, itemNumber, defaultNotes, now, now, name)
+                    )
+                }
+            }
+        }
+
         fun create(context: Context): OrderRadarDatabase = Room.databaseBuilder(
             context,
             OrderRadarDatabase::class.java,
             "order-radar.db"
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build()
     }
 }

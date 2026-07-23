@@ -527,6 +527,7 @@ private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (
     var name by remember(product) { mutableStateOf(product?.name ?: "") }
     var category by remember(product) { mutableStateOf(product?.category ?: ProductCategory.BOX_MEAT) }
     var vendor by remember(product) { mutableStateOf(product?.vendor ?: "") }
+    var itemNumber by remember(product) { mutableStateOf(product?.itemNumber ?: "") }
     var location by remember(product) { mutableStateOf(product?.storageLocation ?: "") }
     var unit by remember(product) { mutableStateOf(product?.defaultUnit ?: "boxes") }
     var caseSize by remember(product) { mutableStateOf(product?.caseSize ?: "") }
@@ -538,6 +539,14 @@ private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (
         OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Product name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         EnumPicker("Category", category, ProductCategory.entries) { category = it }
         OutlinedTextField(value = vendor, onValueChange = { vendor = it }, label = { Text("Vendor / warehouse") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = itemNumber,
+            onValueChange = { itemNumber = it },
+            label = { Text("Item # / case code") },
+            placeholder = { Text("The vendor's printed code, e.g. 80142 -- used by AI Shelf Count to identify this box") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
         OutlinedTextField(value = location, onValueChange = { location = it }, label = { Text("Cooler / shelf location") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OptionPicker("Unit", unit, listOf("boxes", "cases", "pounds", "eaches", "trays")) { unit = it }
         OutlinedTextField(value = caseSize, onValueChange = { caseSize = it }, label = { Text("Case size") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -572,7 +581,7 @@ private fun ProductEditorScreen(product: Product?, onBack: () -> Unit, onSave: (
                         visualIdentifiers = visualIdentifiers.ifBlank { null },
                         createdAt = product?.createdAt ?: now,
                         updatedAt = now,
-                        itemNumber = product?.itemNumber,
+                        itemNumber = itemNumber.ifBlank { null },
                         upc = product?.upc,
                         department = product?.department ?: "Deli",
                         boxWeight = product?.boxWeight,
@@ -618,6 +627,7 @@ private fun ProductDetailScreen(snapshot: ProductSnapshot, forecast: ForecastRes
         SimpleCard {
             Text("Overview", fontWeight = FontWeight.Bold)
             DetailLine("Vendor", product.vendor ?: "Not set")
+            DetailLine("Item # / case code", product.itemNumber ?: "Not set")
             DetailLine("Location", product.storageLocation ?: "Not set")
             DetailLine("Unit", product.defaultUnit)
             DetailLine("Case size", product.caseSize ?: "Not set")
