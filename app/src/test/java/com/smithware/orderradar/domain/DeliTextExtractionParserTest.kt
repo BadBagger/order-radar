@@ -127,5 +127,60 @@ class DeliTextExtractionParserTest {
 
         assertEquals(listOf("please add", "8 extra"), notes)
     }
+
+    @Test
+    fun buildsExtractionBatchAcrossInventoryPromoOrderAndNotes() {
+        val batch = DeliExtractionBatchBuilder.build(
+            inputs = listOf(
+                DeliTextExtractionInput(
+                    id = "cooler-1",
+                    kind = DeliTextSourceKind.INVENTORY,
+                    location = InventoryLocation.COOLER,
+                    text = """
+                        0332094 Soup Chicken Noodle 4 / 4 LB Use By 07/31/26 Brand Blount
+                        0332094 Soup Chicken Noodle 4 / 4 LB Use By 07/31/26 Brand Blount
+                    """.trimIndent()
+                ),
+                DeliTextExtractionInput(
+                    id = "slicer-1",
+                    kind = DeliTextSourceKind.INVENTORY,
+                    location = InventoryLocation.SLICER_BACKSTOCK,
+                    text = "2 blocks yellow cheddar cheese"
+                ),
+                DeliTextExtractionInput(
+                    id = "promo-1",
+                    kind = DeliTextSourceKind.PROMO,
+                    text = "SKU 0332094 Soup Chicken Noodle BOGO retail 4.99 sale 2.49 50%"
+                ),
+                DeliTextExtractionInput(
+                    id = "order-1",
+                    kind = DeliTextSourceKind.ORDER_SCREEN,
+                    text = "0332094 - SOUP CHICKEN NOODLE 4 / 4 LB 2 0 WK"
+                ),
+                DeliTextExtractionInput(
+                    id = "order-2",
+                    kind = DeliTextSourceKind.ORDER_SCREEN,
+                    text = "0080704 - PBX DELI SWISS (2) 18.18 LB 1 0 WK"
+                ),
+                DeliTextExtractionInput(
+                    id = "note-1",
+                    kind = DeliTextSourceKind.NOTE,
+                    text = "please add 8 extra wings"
+                )
+            ),
+            defaultAdStart = LocalDate.of(2026, 7, 27),
+            defaultAdEnd = LocalDate.of(2026, 8, 2)
+        )
+
+        assertEquals(2, batch.inventoryItems.size)
+        assertEquals(2.0, batch.inventoryItems.single { it.sku == "0332094" }.casesOnHand, 0.001)
+        assertEquals(2.0, batch.inventoryItems.single { it.sku.startsWith("UNKNOWN-") }.casesOnHand, 0.001)
+        assertEquals(listOf(0, 1), batch.orderLines.map { it.orderIndex })
+        assertEquals(listOf("0332094", "0080704"), batch.orderLines.map { it.sku })
+        assertEquals(PromoDealType.BOGO, batch.promoItems.single().dealType)
+        assertEquals(listOf("please add 8 extra wings"), batch.stickyNotes)
+        assertEquals(1, batch.verifyLabels.size)
+        assertEquals(null, batch.verifyLabels.single().sku)
+    }
 }
 

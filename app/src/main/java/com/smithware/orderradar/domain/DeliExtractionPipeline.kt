@@ -47,8 +47,62 @@ data class DeliExtractionBatch(
     val stickyNotes: List<String>
 )
 
+enum class DeliTextSourceKind {
+    INVENTORY,
+    PROMO,
+    ORDER_SCREEN,
+    NOTE
+}
+
+data class DeliTextExtractionInput(
+    val id: String,
+    val text: String,
+    val kind: DeliTextSourceKind,
+    val location: InventoryLocation? = null
+)
+
 interface DeliVisionTextExtractor {
     suspend fun extractText(photo: DeliPhotoInput): String
+}
+
+object DeliExtractionBatchBuilder {
+    fun build(
+        inputs: List<DeliTextExtractionInput>,
+        defaultAdStart: LocalDate,
+        defaultAdEnd: LocalDate,
+        confidenceThreshold: Double = 0.80
+    ): DeliExtractionBatch {
+        val inventory = inputs
+            .filter { it.kind == DeliTextSourceKind.INVENTORY }
+            .flatMap { input ->
+                val location = input.location ?: InventoryLocation.COOLER
+                DeliTextExtractionParser.parseInventoryLabels(input.text, input.id, location, confidenceThreshold) +
+                    DeliTextExtractionParser.parseLooseBackstockItems(input.text, input.id, location)
+            }
+            .let(DeliTextExtractionParser::mergeDuplicateCases)
+
+        val promos = inputs
+            .filter { it.kind == DeliTextSourceKind.PROMO }
+            .flatMap { DeliTextExtractionParser.parsePromoItems(it.text, defaultAdStart, defaultAdEnd) }
+
+        val orderLines = inputs
+            .filter { it.kind == DeliTextSourceKind.ORDER_SCREEN }
+            .flatMap { DeliTextExtractionParser.parseOrderScreenLines(it.text) }
+            .mapIndexed { index, line -> line.copy(orderIndex = index) }
+
+        val stickyNotes = inputs.flatMap { DeliTextExtractionParser.parseStickyNotes(it.text) }
+        val verifyLabels = inventory
+            .filter { !it.verified || it.confidence < confidenceThreshold || it.sku.startsWith("UNKNOWN-") }
+            .map { it.toVerifyLabel() }
+
+        return DeliExtractionBatch(
+            inventoryItems = inventory,
+            promoItems = promos,
+            orderLines = orderLines,
+            verifyLabels = verifyLabels,
+            stickyNotes = stickyNotes
+        )
+    }
 }
 
 object DeliTextExtractionParser {
@@ -271,6 +325,17 @@ private fun findVendor(line: String): String? =
             line.contains("Publix", ignoreCase = true) || line.contains("PBX", ignoreCase = true) -> "Publix"
             else -> null
         }
+
+private fun DeliInventoryItem.toVerifyLabel(): ExtractedDeliLabel =
+    ExtractedDeliLabel(
+        itemName = name,
+        sku = sku.takeUnless { it.startsWith("UNKNOWN-") },
+        caseWeightLbs = caseWeightLbs,
+        useByDate = useByDate,
+        brandVendor = brandVendor,
+        confidence = confidence,
+        sourcePhotoId = photoRefs.firstOrNull().orEmpty()
+    )
 
 private fun duplicateKey(item: DeliInventoryItem): String =
     listOf(item.sku.trim().uppercase(Locale.US), item.useByDate?.toString().orEmpty(), item.location.name).joinToString("|")
